@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/internal/circuitbreaker"
+	"github.com/b11902156/rag-gateway/gateway/internal/firewall"
 	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
 )
 
@@ -38,6 +39,7 @@ type Proxy struct {
 	logger    *zap.Logger
 	cb        *circuitbreaker.CB
 	retrieval Retriever // optional; nil means direct proxy (no RAG)
+	fw        *firewall.ContextFirewall
 }
 
 // New creates a Proxy with a circuit breaker (5 failures → OPEN, 30 s reset).
@@ -49,6 +51,7 @@ func New(vllmEndpoint string, logger *zap.Logger) *Proxy {
 		},
 		logger: logger,
 		cb:     circuitbreaker.New(5, 30*time.Second),
+		fw:     firewall.New(),
 	}
 }
 
@@ -86,7 +89,8 @@ func (p *Proxy) Query(c *gin.Context) {
 
 	// RAG mode: retrieve context and inject into messages before forwarding.
 	if p.retrieval != nil {
-		augmented, ragErr := p.ragAugment(c.Request.Context(), payload, traceID)
+		userRole := c.GetString("role") // set by JWT auth middleware
+		augmented, ragErr := p.ragAugment(c.Request.Context(), payload, traceID, userRole)
 		if ragErr != nil {
 			// cite-or-refuse: no sections → reject the request.
 			c.JSON(http.StatusUnprocessableEntity, gin.H{
@@ -157,7 +161,8 @@ func (p *Proxy) Query(c *gin.Context) {
 
 // ragAugment retrieves relevant sections and injects them as a system message.
 // Returns an augmented payload or an error if no sections were found (cite-or-refuse).
-func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID string) (map[string]any, error) {
+// userRole is the JWT role claim used by the context firewall for trust-tier filtering.
+func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID, userRole string) (map[string]any, error) {
 	query := extractLastUserQuery(payload)
 	if query == "" {
 		// No user message — skip retrieval (let vLLM handle as-is).
@@ -172,8 +177,11 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID 
 		return payload, nil
 	}
 
+	// Context firewall: strip injection patterns and enforce trust-tier access.
+	sections = p.fw.SanitizeSections(sections, userRole)
+
 	if len(sections) == 0 {
-		p.logger.Info("proxy: no sections retrieved, refusing",
+		p.logger.Info("proxy: no sections after firewall, refusing",
 			zap.String("trace_id", traceID), zap.String("query", query))
 		return nil, fmt.Errorf("cite-or-refuse: no sections")
 	}

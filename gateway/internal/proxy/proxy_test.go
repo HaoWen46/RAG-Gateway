@@ -201,7 +201,7 @@ func TestCiteOrRefuse_WithSections(t *testing.T) {
 	defer srv.Close()
 
 	stub := &stubRetriever{sections: []retrieval.Section{
-		{DocumentID: "d1", SectionID: "d1::0", Content: "## Policy\nAll access is logged.", Score: 1.0, TrustTier: "internal"},
+		{DocumentID: "d1", SectionID: "d1::0", Content: "## Policy\nAll access is logged.", Score: 1.0, TrustTier: "public"},
 	}}
 	r := setupRouterWithRetriever(srv.URL, stub)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/query",
