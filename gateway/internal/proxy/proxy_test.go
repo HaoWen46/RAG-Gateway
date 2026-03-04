@@ -279,3 +279,76 @@ func TestSecurityHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestOutputFilter_MissingCitation_RAGMode(t *testing.T) {
+	// vLLM returns a response with NO citation → output filter should reject with 422.
+	srv := fakevLLM(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Response has no [doc:X, sec:Y] citation.
+		w.Write([]byte(`{"choices":[{"message":{"content":"I don't know."}}]}`))
+	})
+	defer srv.Close()
+
+	stub := &stubRetriever{sections: []retrieval.Section{
+		{DocumentID: "d1", SectionID: "d1::0", Content: "Policy text.", Score: 1.0, TrustTier: "public"},
+	}}
+	r := setupRouterWithRetriever(srv.URL, stub)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query",
+		strings.NewReader(`{"model":"qwen","messages":[{"role":"user","content":"what is the policy?"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 (missing citation), got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "response_missing_citation") {
+		t.Fatalf("expected response_missing_citation in body: %s", w.Body.String())
+	}
+}
+
+func TestOutputFilter_NonRAGMode_NoCitationCheck(t *testing.T) {
+	// Without a retriever, no citation check is performed — any response passes.
+	srv := fakevLLM(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"plain answer without citation"}}]}`))
+	})
+	defer srv.Close()
+
+	r := setupRouter(srv.URL) // no retriever
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query",
+		strings.NewReader(`{"model":"qwen","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (no citation check in non-RAG mode), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOutputFilter_CitationPresent_RAGMode(t *testing.T) {
+	// RAG mode with a proper citation → 200.
+	srv := fakevLLM(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"The policy states X [doc:d1, sec:d1::0]."}}]}`))
+	})
+	defer srv.Close()
+
+	stub := &stubRetriever{sections: []retrieval.Section{
+		{DocumentID: "d1", SectionID: "d1::0", Content: "Policy.", Score: 1.0, TrustTier: "public"},
+	}}
+	r := setupRouterWithRetriever(srv.URL, stub)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query",
+		strings.NewReader(`{"model":"qwen","messages":[{"role":"user","content":"what is the policy?"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (citation present), got %d: %s", w.Code, w.Body.String())
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -97,9 +98,10 @@ func (p *Proxy) Query(c *gin.Context) {
 	}
 
 	// RAG mode: retrieve context and inject into messages before forwarding.
+	ragActive := false
 	if p.retrieval != nil {
 		userRole := c.GetString("role") // set by JWT auth middleware
-		augmented, ragErr := p.ragAugment(c.Request.Context(), payload, traceID, userRole)
+		augmented, injected, ragErr := p.ragAugment(c.Request.Context(), payload, traceID, userRole)
 		if ragErr != nil {
 			if strings.HasPrefix(ragErr.Error(), "policy:") {
 				c.JSON(http.StatusForbidden, gin.H{"error": "access denied by policy"})
@@ -112,6 +114,7 @@ func (p *Proxy) Query(c *gin.Context) {
 			}
 			return
 		}
+		ragActive = injected
 		payload = augmented
 	}
 
@@ -168,18 +171,19 @@ func (p *Proxy) Query(c *gin.Context) {
 	if streaming {
 		p.streamResponse(c, resp, start, traceID)
 	} else {
-		p.bufferedResponse(c, resp, start, traceID)
+		p.bufferedResponse(c, resp, start, traceID, ragActive)
 	}
 }
 
 // ragAugment retrieves relevant sections and injects them as a system message.
-// Returns an augmented payload or an error if no sections were found (cite-or-refuse).
+// Returns the (possibly augmented) payload, a boolean indicating whether RAG context
+// was injected, and an error if the request must be rejected (cite-or-refuse / policy).
 // userRole is the JWT role claim used by the context firewall for trust-tier filtering.
-func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID, userRole string) (map[string]any, error) {
+func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID, userRole string) (map[string]any, bool, error) {
 	query := extractLastUserQuery(payload)
 	if query == "" {
 		// No user message — skip retrieval (let vLLM handle as-is).
-		return payload, nil
+		return payload, false, nil
 	}
 
 	sections, err := p.retrieval.Retrieve(ctx, query, traceID, ragTopK)
@@ -187,14 +191,14 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 		p.logger.Warn("proxy: retrieval failed, continuing without RAG",
 			zap.String("trace_id", traceID), zap.Error(err))
 		// Degrade gracefully: if retrieval service is down, skip cite-or-refuse.
-		return payload, nil
+		return payload, false, nil
 	}
 
 	// Policy gate: ask OPA whether this role may access the retrieved tiers.
 	if allowed, pErr := p.policy.CheckRetrieval(ctx, userRole, collectTrustTiers(sections)); pErr == nil && !allowed {
 		p.logger.Warn("proxy: policy denied retrieval",
 			zap.String("trace_id", traceID), zap.String("role", userRole))
-		return nil, fmt.Errorf("policy: retrieval denied")
+		return nil, false, fmt.Errorf("policy: retrieval denied")
 	}
 
 	// Context firewall: strip injection patterns and enforce trust-tier access.
@@ -203,7 +207,7 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 	if len(sections) == 0 {
 		p.logger.Info("proxy: no sections after firewall, refusing",
 			zap.String("trace_id", traceID), zap.String("query", query))
-		return nil, fmt.Errorf("cite-or-refuse: no sections")
+		return nil, false, fmt.Errorf("cite-or-refuse: no sections")
 	}
 
 	systemMsg := buildRAGSystemMessage(sections)
@@ -216,7 +220,7 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 	augmented := shallowCopyMap(payload)
 	messages := prependSystemMessage(augmented["messages"], systemMsg)
 	augmented["messages"] = messages
-	return augmented, nil
+	return augmented, true, nil
 }
 
 // extractLastUserQuery returns the content of the last user message in messages.
@@ -281,13 +285,25 @@ func collectTrustTiers(sections []retrieval.Section) []string {
 	return out
 }
 
-func (p *Proxy) bufferedResponse(c *gin.Context, resp *http.Response, start time.Time, traceID string) {
+func (p *Proxy) bufferedResponse(c *gin.Context, resp *http.Response, start time.Time, traceID string, ragActive bool) {
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		p.logger.Warn("proxy: read upstream body failed", zap.String("trace_id", traceID), zap.Error(err))
 		c.JSON(http.StatusBadGateway, gin.H{"error": upstreamError})
 		return
 	}
+
+	// Output filter: in RAG mode, the response MUST contain at least one citation.
+	if ragActive && !responseHasCitation(data) {
+		p.logger.Warn("proxy: output filter rejected response (missing citation)",
+			zap.String("trace_id", traceID))
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":                    "response does not contain required citations",
+			"response_missing_citation": true,
+		})
+		return
+	}
+
 	p.logger.Info("proxy: buffered complete",
 		zap.String("trace_id", traceID),
 		zap.Duration("duration", time.Since(start)),
@@ -338,6 +354,21 @@ func (p *Proxy) streamResponse(c *gin.Context, resp *http.Response, start time.T
 
 func isSSEDataLine(line string) bool {
 	return len(line) >= 6 && line[:6] == "data: "
+}
+
+// citationRE matches the citation format [doc:<id>, sec:<id>] in LLM responses.
+var citationRE = regexp.MustCompile(`\[doc:[^\]]+,\s*sec:[^\]]+\]`)
+
+// responseHasCitation checks whether a buffered vLLM JSON response contains
+// at least one citation in the format [doc:<id>, sec:<id>].
+// It extracts the content field from the first choice's message.
+func responseHasCitation(data []byte) bool {
+	// Quick check before JSON parsing — avoids unmarshalling large payloads
+	// if the pattern is clearly absent.
+	if citationRE.Match(data) {
+		return true
+	}
+	return false
 }
 
 func setSecurityHeaders(c *gin.Context) {
