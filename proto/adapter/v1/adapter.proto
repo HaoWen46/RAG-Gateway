@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package adapter.v1;
+
+option go_package = "github.com/b11902156/rag-gateway/adapter/internal/pb/adapterpb";
+
+service AdapterService {
+  rpc Compile(CompileRequest) returns (CompileResponse);
+  rpc Verify(VerifyRequest) returns (VerifyResponse);
+  rpc Revoke(RevokeRequest) returns (RevokeResponse);
+}
+
+message CompileRequest {
+  string session_id = 1;
+  string trace_id = 2;
+  repeated string section_ids = 3;
+  int32 ttl_seconds = 4;
+}
+
+message CompileResponse {
+  string adapter_id = 1;
+  string signature = 2;
+  int64 expires_at = 3;
+}
+
+message VerifyRequest {
+  string adapter_id = 1;
+  string signature = 2;
+}
+
+message VerifyResponse {
+  bool valid = 1;
+  repeated ProbeResult probe_results = 2;
+}
+
+message ProbeResult {
+  string probe_name = 1;
+  bool passed = 2;
+  string detail = 3;
+}
+
+message RevokeRequest {
+  string adapter_id = 1;
+}
+
+message RevokeResponse {
+  bool success = 1;
+}

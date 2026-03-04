@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package retrieval.v1;
+
+option go_package = "github.com/b11902156/rag-gateway/retrieval/internal/pb/retrievalpb";
+
+service RetrievalService {
+  rpc Retrieve(RetrieveRequest) returns (RetrieveResponse);
+  rpc Index(IndexRequest) returns (IndexResponse);
+}
+
+message RetrieveRequest {
+  string query = 1;
+  string trace_id = 2;
+  int32 top_k = 3;
+  map<string, string> metadata_filters = 4;
+}
+
+message RetrieveResponse {
+  repeated RetrievedSection sections = 1;
+}
+
+message RetrievedSection {
+  string document_id = 1;
+  string section_id = 2;
+  string content = 3;
+  float score = 4;
+  string trust_tier = 5;
+  map<string, string> metadata = 6;
+}
+
+message IndexRequest {
+  string document_id = 1;
+  string content = 2;
+  map<string, string> metadata = 3;
+}
+
+message IndexResponse {
+  bool success = 1;
+  string message = 2;
+}

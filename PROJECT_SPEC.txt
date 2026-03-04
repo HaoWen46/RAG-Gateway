@@ -1,0 +1,245 @@
+Project: Zero-Trust RAG Gateway with “Compile-to-LoRA” Mode
+
+Think: a security-grade gateway that sits in front of your LLM stack and enforces retrieval safety, policy, provenance, and (new) adapter safety.
+
+NOTE FOR CODING AGENTS
+Reference links are included for each major technology in this stack.
+If you already understand the component (PageIndex, vLLM, LoRA, etc.), you do NOT need to read the linked material.
+The links exist only for clarification or implementation reference.
+
+You’ll support two serving modes:
+	1.	RAG Mode (default)
+Query → PageIndex retrieves safe sections → model answers with citations.
+	2.	Compile Mode (Doc-to-LoRA)
+Query → PageIndex retrieves policy-approved sections → Doc-to-LoRA generates a session LoRA → vLLM serves answers with tiny context (and still cites sources).
+
+Why this is a big flex: you’re treating documents and adapters as untrusted inputs, and you build the security controls around both.
+
+Relevant stack references
+PageIndex (vectorless RAG): https://github.com/VectifyAI/PageIndex
+PageIndex docs: https://docs.pageindex.ai/cookbook/vectorless-rag-pageindex
+
+Doc-to-LoRA / Text-to-LoRA (Sakana AI)
+https://sakana.ai/doc-to-lora/
+https://pub.sakana.ai/doc-to-lora/
+https://github.com/SakanaAI/text-to-lora
+
+Research papers
+Doc-to-LoRA paper: https://arxiv.org/abs/2602.15902
+Text-to-LoRA paper: https://arxiv.org/abs/2506.06105
+
+LoRA background
+https://arxiv.org/abs/2106.09685
+
+vLLM runtime LoRA support
+https://docs.vllm.ai/en/stable/features/lora.html
+
+OWASP LLM Top 10
+https://genai.owasp.org/llm-top-10-2023-24/
+
+Qwen3.5-35B-A3B model card
+https://huggingface.co/Qwen/Qwen3.5-35B-A3B
+
+⸻
+
+Core components (use Go wherever it makes sense)
+
+1) Gateway API (Go)
+
+The front door: auth, rate limits, request shaping, policy calls, audit IDs.
+
+Responsibilities
+	•	JWT/OIDC auth + RBAC
+	•	Request normalization (chat, tool calls, doc queries)
+	•	Policy checks (what docs can be touched, what answers allowed)
+	•	Creates immutable trace IDs for end-to-end audit
+
+2) Policy Engine (Go + OPA)
+
+OPA is boring, which is exactly why it’s good. You make it the bouncer.
+
+OPA reference
+https://www.openpolicyagent.org/
+
+Decisions
+	•	Allow/deny retrieval targets (doc, section, classification)
+	•	Allow/deny “compile-to-LoRA”
+	•	Output constraints (redact, cite-required, refuse)
+
+(OWASP LLM Top 10 is a good mapping scaffold for the threat model + controls.)
+
+3) Retrieval Service (mostly Go, with a PageIndex worker)
+	•	Go service does: doc catalog, metadata filters, ranking, caching
+	•	A Python worker does: PageIndex tree build + retrieval (because PageIndex is a Python-first repo).
+
+PageIndex reference
+https://github.com/VectifyAI/PageIndex
+
+Key security bit
+	•	Treat retrieved text as hostile. Run “context firewall” before it can influence the model (or an adapter compiler).
+
+4) Adapter Service (Python)
+
+Wraps Sakana:
+	•	Doc-to-LoRA: doc/sections → LoRA adapter
+	•	Text-to-LoRA: task description → LoRA adapter
+
+Sakana references
+https://sakana.ai/doc-to-lora/
+https://github.com/SakanaAI/text-to-lora
+
+This service is behind policy gates. No direct user access.
+
+5) Inference (vLLM)
+	•	vLLM serves Qwen3.5-35B-A3B (BF16). HF model card explicitly lists vLLM compatibility.
+	•	Use vLLM dynamic LoRA adapter APIs to load/unload adapters at runtime.
+
+vLLM reference
+https://docs.vllm.ai/
+
+LoRA runtime loading docs
+https://docs.vllm.ai/en/stable/features/lora.html
+
+Model reference
+https://huggingface.co/Qwen/Qwen3.5-35B-A3B
+
+(And yes, vLLM docs warn this is risky in production. That warning becomes your whole security story.)
+
+Hardware reality check
+BF16 for Qwen3.5-35B-A3B is hefty; practical setups tend to be big VRAM class.
+
+Example training context
+https://arxiv.org/abs/2305.14314
+
+(For inference, you’ll still want serious GPUs, tensor parallel, etc.)
+
+⸻
+
+Data flow (what happens on a request)
+
+RAG Mode
+	1.	Go Gateway authenticates + assigns trace_id
+	2.	Policy engine approves doc scope
+	3.	Retrieval service calls PageIndex to fetch candidate sections (with node IDs + page refs)
+	4.	Context firewall runs:
+	•	strips/labels instruction-like text
+	•	blocks “override system message” patterns
+	•	enforces doc trust tiers
+	5.	Prompt assembler adds citations + provenance
+	6.	vLLM generates answer
+	7.	Output filter enforces redaction + “cite-or-refuse”
+	8.	Audit log stores: inputs, retrieved node IDs, policies, model config, output hash
+
+Compile Mode (Doc-to-LoRA)
+
+Same as above until retrieval, then:
+4. Policy checks: compile allowed? TTL? sensitivity tier?
+5. Adapter Service generates LoRA from only approved sections
+6. Adapter verification:
+	•	signature + hash
+	•	lineage: (doc hashes, PageIndex node IDs)
+	•	quick behavioral probe suite (see below)
+
+	7.	vLLM loads LoRA dynamically via API
+	8.	Serve multiple Q&A turns with minimal context until TTL expires, then unload/revoke
+
+⸻
+
+The “security intern” parts that make it not cringe
+
+Adapter Security (the new attack surface)
+
+If RAG poisoning is bad, “poison becomes weights” is worse. So you implement:
+	•	Session-scoped adapters (TTL 5–30 min), auto-revoked
+	•	Allowlist compilation: only compile from trusted doc classes
+	•	Compile sanitization: reject sections that look like prompt injection payloads
+	•	Post-compile canary probes
+	•	“Ignore previous instructions” tests
+	•	secret canary strings (should never be emitted)
+	•	tool-use bait prompts (should refuse if tools disabled)
+	•	Signed adapters: adapter blobs are signed by your Adapter Service; vLLM only loads signed ones
+
+Retrieval Security (PageIndex-specific)
+
+PageIndex reference
+https://github.com/VectifyAI/PageIndex
+
+PageIndex is “reasoning-based” RAG and shows strong long-doc performance claims (FinanceBench etc.).
+
+Security twist: PageIndex can be forced into selecting malicious sections if the doc is adversarial, so:
+	•	trust-tier scoring per doc
+	•	section-level “instruction likelihood” scoring
+	•	provenance-required answers
+
+⸻
+
+Go-heavy tech stack (clean split)
+
+Go
+	•	API Gateway (Gin/Fiber)
+https://github.com/gin-gonic/gin
+https://gofiber.io/
+
+	•	Policy Decision Point (OPA sidecar or embedded calls)
+https://www.openpolicyagent.org/
+
+	•	Audit/Telemetry collector + query UI backend
+
+	•	Retrieval orchestrator (filters, caching, metadata, ranking)
+
+Python
+	•	PageIndex worker (tree build + retrieve)
+https://github.com/VectifyAI/PageIndex
+
+	•	Sakana Adapter Service (Doc-to-LoRA, Text-to-LoRA)
+https://sakana.ai/doc-to-lora/
+
+	•	Optional eval harness scripts
+
+Infra
+	•	vLLM server for Qwen3.5-35B-A3B (BF16)
+https://docs.vllm.ai/
+https://huggingface.co/Qwen/Qwen3.5-35B-A3B
+
+	•	Postgres (metadata, audit, adapter lineage)
+https://www.postgresql.org/
+
+	•	Redis (rate limits, retrieval cache)
+https://redis.io/
+
+	•	OpenTelemetry everywhere
+https://opentelemetry.io/
+
+⸻
+
+What to build first (so it’s shippable)
+
+If you want a clean “I finished a real system” arc:
+
+Milestone 1
+	•	Go Gateway + Auth + Audit IDs
+	•	vLLM serving Qwen3.5-35B-A3B (no adapters yet)
+
+Milestone 2
+	•	PageIndex ingestion + retrieval service
+	•	Cite-or-refuse output mode
+
+Milestone 3
+	•	Context firewall + policy gating
+
+Milestone 4
+	•	Add Doc-to-LoRA compile mode + vLLM dynamic LoRA load/unload
+
+Milestone 5
+	•	Attack suite + dashboards (blocked injections, contaminated retrieval rate, adapter probe failures)
+
+⸻
+
+One spicy, practical constraint
+
+vLLM dynamic LoRA is powerful but explicitly “risky” if users can manage adapters.
+
+Reference
+https://docs.vllm.ai/en/stable/features/lora.html
+
+Your design should make that impossible: only the Adapter Service can mint signed adapters, and only the Gateway can request vLLM to load them.
