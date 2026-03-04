@@ -14,6 +14,7 @@ import (
 	"github.com/b11902156/rag-gateway/gateway/internal/db"
 	"github.com/b11902156/rag-gateway/gateway/internal/handler"
 	"github.com/b11902156/rag-gateway/gateway/internal/middleware"
+	"github.com/b11902156/rag-gateway/gateway/internal/policy"
 	"github.com/b11902156/rag-gateway/gateway/internal/proxy"
 	"github.com/b11902156/rag-gateway/gateway/internal/ratelimit"
 	"github.com/b11902156/rag-gateway/gateway/internal/readiness"
@@ -60,8 +61,11 @@ func main() {
 		defer rc.Close()
 	}
 
+	// Policy engine (OPA) — non-fatal if OPA endpoint is empty.
+	policyClient := policy.NewClient(cfg.OPAEndpoint)
+
 	// vLLM reverse proxy — attach retrieval client for RAG mode.
-	vllmProxy := proxy.New(cfg.VLLMEndpoint, logger)
+	vllmProxy := proxy.New(cfg.VLLMEndpoint, logger).WithPolicy(policyClient)
 	if rc != nil {
 		vllmProxy.WithRetrieval(rc)
 	}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/b11902156/rag-gateway/gateway/internal/circuitbreaker"
 	"github.com/b11902156/rag-gateway/gateway/internal/firewall"
+	"github.com/b11902156/rag-gateway/gateway/internal/policy"
 	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
 )
 
@@ -40,6 +41,7 @@ type Proxy struct {
 	cb        *circuitbreaker.CB
 	retrieval Retriever // optional; nil means direct proxy (no RAG)
 	fw        *firewall.ContextFirewall
+	policy    *policy.Client
 }
 
 // New creates a Proxy with a circuit breaker (5 failures → OPEN, 30 s reset).
@@ -52,7 +54,14 @@ func New(vllmEndpoint string, logger *zap.Logger) *Proxy {
 		logger: logger,
 		cb:     circuitbreaker.New(5, 30*time.Second),
 		fw:     firewall.New(),
+		policy: policy.NewClient(""), // disabled by default; set via WithPolicy
 	}
+}
+
+// WithPolicy attaches an OPA policy client.
+func (p *Proxy) WithPolicy(pc *policy.Client) *Proxy {
+	p.policy = pc
+	return p
 }
 
 // WithRetrieval attaches an optional retriever for RAG mode.
@@ -92,11 +101,15 @@ func (p *Proxy) Query(c *gin.Context) {
 		userRole := c.GetString("role") // set by JWT auth middleware
 		augmented, ragErr := p.ragAugment(c.Request.Context(), payload, traceID, userRole)
 		if ragErr != nil {
-			// cite-or-refuse: no sections → reject the request.
-			c.JSON(http.StatusUnprocessableEntity, gin.H{
-				"error":         "no relevant content found for your query",
-				"cite_required": true,
-			})
+			if strings.HasPrefix(ragErr.Error(), "policy:") {
+				c.JSON(http.StatusForbidden, gin.H{"error": "access denied by policy"})
+			} else {
+				// cite-or-refuse: no sections after firewall → reject the request.
+				c.JSON(http.StatusUnprocessableEntity, gin.H{
+					"error":         "no relevant content found for your query",
+					"cite_required": true,
+				})
+			}
 			return
 		}
 		payload = augmented
@@ -177,6 +190,13 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 		return payload, nil
 	}
 
+	// Policy gate: ask OPA whether this role may access the retrieved tiers.
+	if allowed, pErr := p.policy.CheckRetrieval(ctx, userRole, collectTrustTiers(sections)); pErr == nil && !allowed {
+		p.logger.Warn("proxy: policy denied retrieval",
+			zap.String("trace_id", traceID), zap.String("role", userRole))
+		return nil, fmt.Errorf("policy: retrieval denied")
+	}
+
 	// Context firewall: strip injection patterns and enforce trust-tier access.
 	sections = p.fw.SanitizeSections(sections, userRole)
 
@@ -244,6 +264,19 @@ func shallowCopyMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
 		out[k] = v
+	}
+	return out
+}
+
+// collectTrustTiers returns the unique trust tiers present in sections.
+func collectTrustTiers(sections []retrieval.Section) []string {
+	seen := make(map[string]struct{}, len(sections))
+	out := make([]string, 0, len(sections))
+	for _, s := range sections {
+		if _, ok := seen[s.TrustTier]; !ok {
+			seen[s.TrustTier] = struct{}{}
+			out = append(out, s.TrustTier)
+		}
 	}
 	return out
 }
