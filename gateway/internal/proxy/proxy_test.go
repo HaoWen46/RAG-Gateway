@@ -1,7 +1,9 @@
 package proxy_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/internal/proxy"
+	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -21,13 +24,30 @@ func fakevLLM(handler http.HandlerFunc) *httptest.Server {
 }
 
 func setupRouter(vllmURL string) *gin.Engine {
-	r := gin.New()
+	return setupRouterWithRetriever(vllmURL, nil)
+}
+
+func setupRouterWithRetriever(vllmURL string, r proxy.Retriever) *gin.Engine {
+	router := gin.New()
 	p := proxy.New(vllmURL, zap.NewNop())
-	r.POST("/api/v1/query", func(c *gin.Context) {
+	if r != nil {
+		p.WithRetrieval(r)
+	}
+	router.POST("/api/v1/query", func(c *gin.Context) {
 		c.Set("trace_id", "test-trace")
 		p.Query(c)
 	})
-	return r
+	return router
+}
+
+// stubRetriever is a test double for the Retriever interface.
+type stubRetriever struct {
+	sections []retrieval.Section
+	err      error
+}
+
+func (s *stubRetriever) Retrieve(_ context.Context, _, _ string, _ int32) ([]retrieval.Section, error) {
+	return s.sections, s.err
 }
 
 func TestBufferedProxy(t *testing.T) {
@@ -139,6 +159,98 @@ func TestCircuitBreakerTrips(t *testing.T) {
 	// 6th call: circuit is now OPEN → 503.
 	if code := do(); code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 from open circuit, got %d", code)
+	}
+}
+
+func TestCiteOrRefuse_NoSections(t *testing.T) {
+	// When retrieval returns 0 sections, expect 422.
+	srv := fakevLLM(func(w http.ResponseWriter, r *http.Request) {
+		// Should never be called.
+		t.Error("vLLM should not be called when retrieval returns no sections")
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+
+	stub := &stubRetriever{sections: []retrieval.Section{}} // no sections
+	r := setupRouterWithRetriever(srv.URL, stub)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query",
+		strings.NewReader(`{"model":"qwen","messages":[{"role":"user","content":"what is the policy?"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 (cite-or-refuse), got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "cite_required") {
+		t.Fatalf("expected cite_required in body: %s", w.Body.String())
+	}
+}
+
+func TestCiteOrRefuse_WithSections(t *testing.T) {
+	// When retrieval returns sections, they should be injected as a system message.
+	var receivedMessages []any
+	srv := fakevLLM(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		receivedMessages, _ = body["messages"].([]any)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"answer [doc:d1, sec:d1::0]"}}]}`))
+	})
+	defer srv.Close()
+
+	stub := &stubRetriever{sections: []retrieval.Section{
+		{DocumentID: "d1", SectionID: "d1::0", Content: "## Policy\nAll access is logged.", Score: 1.0, TrustTier: "internal"},
+	}}
+	r := setupRouterWithRetriever(srv.URL, stub)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query",
+		strings.NewReader(`{"model":"qwen","messages":[{"role":"user","content":"what is the policy?"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	// First message must be the injected system message.
+	if len(receivedMessages) < 2 {
+		t.Fatalf("expected at least 2 messages (system + user), got %d", len(receivedMessages))
+	}
+	first, _ := receivedMessages[0].(map[string]any)
+	if first["role"] != "system" {
+		t.Errorf("first message role: got %q, want \"system\"", first["role"])
+	}
+	sysContent, _ := first["content"].(string)
+	if !strings.Contains(sysContent, "d1") {
+		t.Errorf("system message missing document id: %s", sysContent)
+	}
+	if !strings.Contains(sysContent, "citation") {
+		t.Errorf("system message missing citation instruction: %s", sysContent)
+	}
+}
+
+func TestCiteOrRefuse_RetrievalError_Degrades(t *testing.T) {
+	// When retrieval returns an error (service down), proxy degrades gracefully
+	// and forwards the request to vLLM without RAG context.
+	srv := fakevLLM(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"direct answer"}}]}`))
+	})
+	defer srv.Close()
+
+	stub := &stubRetriever{err: errors.New("retrieval service unavailable")}
+	r := setupRouterWithRetriever(srv.URL, stub)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query",
+		strings.NewReader(`{"model":"qwen","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Should degrade to direct proxy, not 422.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (graceful degrade), got %d: %s", w.Code, w.Body.String())
 	}
 }
 

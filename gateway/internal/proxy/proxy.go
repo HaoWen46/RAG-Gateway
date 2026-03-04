@@ -9,25 +9,35 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/internal/circuitbreaker"
+	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
 )
 
 const (
 	vllmPath      = "/v1/chat/completions"
 	upstreamError = "upstream service error"
+	ragTopK       = 5
 )
+
+// Retriever is the interface the proxy uses to fetch document sections.
+// retrieval.Client satisfies this interface; tests may use a stub.
+type Retriever interface {
+	Retrieve(ctx context.Context, query, traceID string, topK int32) ([]retrieval.Section, error)
+}
 
 // Proxy forwards requests to vLLM and handles both buffered and SSE responses.
 type Proxy struct {
-	endpoint string // e.g. "http://localhost:8000"
-	client   *http.Client
-	logger   *zap.Logger
-	cb       *circuitbreaker.CB
+	endpoint  string // e.g. "http://localhost:8000"
+	client    *http.Client
+	logger    *zap.Logger
+	cb        *circuitbreaker.CB
+	retrieval Retriever // optional; nil means direct proxy (no RAG)
 }
 
 // New creates a Proxy with a circuit breaker (5 failures → OPEN, 30 s reset).
@@ -40,6 +50,13 @@ func New(vllmEndpoint string, logger *zap.Logger) *Proxy {
 		logger: logger,
 		cb:     circuitbreaker.New(5, 30*time.Second),
 	}
+}
+
+// WithRetrieval attaches an optional retriever for RAG mode.
+// Calling this enables cite-or-refuse: queries with no retrieved sections are rejected.
+func (p *Proxy) WithRetrieval(r Retriever) *Proxy {
+	p.retrieval = r
+	return p
 }
 
 // Query is the Gin handler for POST /api/v1/query.
@@ -65,6 +82,20 @@ func (p *Proxy) Query(c *gin.Context) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
 		return
+	}
+
+	// RAG mode: retrieve context and inject into messages before forwarding.
+	if p.retrieval != nil {
+		augmented, ragErr := p.ragAugment(c.Request.Context(), payload, traceID)
+		if ragErr != nil {
+			// cite-or-refuse: no sections → reject the request.
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":         "no relevant content found for your query",
+				"cite_required": true,
+			})
+			return
+		}
+		payload = augmented
 	}
 
 	streaming, _ := payload["stream"].(bool)
@@ -122,6 +153,91 @@ func (p *Proxy) Query(c *gin.Context) {
 	} else {
 		p.bufferedResponse(c, resp, start, traceID)
 	}
+}
+
+// ragAugment retrieves relevant sections and injects them as a system message.
+// Returns an augmented payload or an error if no sections were found (cite-or-refuse).
+func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID string) (map[string]any, error) {
+	query := extractLastUserQuery(payload)
+	if query == "" {
+		// No user message — skip retrieval (let vLLM handle as-is).
+		return payload, nil
+	}
+
+	sections, err := p.retrieval.Retrieve(ctx, query, traceID, ragTopK)
+	if err != nil {
+		p.logger.Warn("proxy: retrieval failed, continuing without RAG",
+			zap.String("trace_id", traceID), zap.Error(err))
+		// Degrade gracefully: if retrieval service is down, skip cite-or-refuse.
+		return payload, nil
+	}
+
+	if len(sections) == 0 {
+		p.logger.Info("proxy: no sections retrieved, refusing",
+			zap.String("trace_id", traceID), zap.String("query", query))
+		return nil, fmt.Errorf("cite-or-refuse: no sections")
+	}
+
+	systemMsg := buildRAGSystemMessage(sections)
+	p.logger.Info("proxy: RAG context injected",
+		zap.String("trace_id", traceID),
+		zap.Int("sections", len(sections)),
+	)
+
+	// Clone payload and prepend system message.
+	augmented := shallowCopyMap(payload)
+	messages := prependSystemMessage(augmented["messages"], systemMsg)
+	augmented["messages"] = messages
+	return augmented, nil
+}
+
+// extractLastUserQuery returns the content of the last user message in messages.
+func extractLastUserQuery(payload map[string]any) string {
+	messages, _ := payload["messages"].([]any)
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg, ok := messages[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := msg["role"].(string); role == "user" {
+			content, _ := msg["content"].(string)
+			return content
+		}
+	}
+	return ""
+}
+
+// buildRAGSystemMessage formats retrieved sections into a system prompt.
+func buildRAGSystemMessage(sections []retrieval.Section) string {
+	var b strings.Builder
+	b.WriteString("You are a helpful assistant operating in RAG mode. ")
+	b.WriteString("Answer the user's question based ONLY on the following retrieved sections. ")
+	b.WriteString("You MUST include citations in the format [doc:<document_id>, sec:<section_id>] for every factual claim. ")
+	b.WriteString("If you cannot answer from the provided sections, respond with: \"I cannot answer this question based on the available information.\"\n\n")
+	b.WriteString("Retrieved sections:\n")
+	for i, s := range sections {
+		fmt.Fprintf(&b, "\n[%d] (doc: %s, sec: %s, trust: %s, score: %.2f)\n%s\n",
+			i+1, s.DocumentID, s.SectionID, s.TrustTier, s.Score, s.Content)
+	}
+	return b.String()
+}
+
+// prependSystemMessage inserts a system message at the start of the messages array.
+func prependSystemMessage(messages any, content string) []any {
+	existing, _ := messages.([]any)
+	sysMsg := map[string]any{"role": "system", "content": content}
+	result := make([]any, 0, len(existing)+1)
+	result = append(result, sysMsg)
+	result = append(result, existing...)
+	return result
+}
+
+func shallowCopyMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 func (p *Proxy) bufferedResponse(c *gin.Context, resp *http.Response, start time.Time, traceID string) {

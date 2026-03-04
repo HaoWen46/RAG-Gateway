@@ -17,6 +17,7 @@ import (
 	"github.com/b11902156/rag-gateway/gateway/internal/proxy"
 	"github.com/b11902156/rag-gateway/gateway/internal/ratelimit"
 	"github.com/b11902156/rag-gateway/gateway/internal/readiness"
+	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
 )
 
 func main() {
@@ -50,8 +51,20 @@ func main() {
 	// vLLM readiness probe — warmup goroutine starts immediately.
 	probe := readiness.New(cfg.VLLMEndpoint, logger)
 
-	// vLLM reverse proxy.
+	// Retrieval gRPC client (non-fatal: RAG mode degrades gracefully if unavailable).
+	rc, err := retrieval.New(cfg.RetrievalAddr, logger)
+	if err != nil {
+		logger.Warn("retrieval service unavailable, RAG mode disabled", zap.Error(err))
+		rc = nil
+	} else {
+		defer rc.Close()
+	}
+
+	// vLLM reverse proxy — attach retrieval client for RAG mode.
 	vllmProxy := proxy.New(cfg.VLLMEndpoint, logger)
+	if rc != nil {
+		vllmProxy.WithRetrieval(rc)
+	}
 
 	r := gin.New()
 	r.Use(gin.Recovery())
