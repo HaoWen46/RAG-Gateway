@@ -10,11 +10,14 @@ dependencies = [
     "grpcio>=1.62.0",
     "grpcio-tools>=1.62.0",
     "protobuf>=4.25.0",
+    "rank-bm25>=0.2.2",
+    "numpy>=1.26.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "anyio>=4.0",
 ]
 
 [tool.setuptools.packages.find]
