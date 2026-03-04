@@ -9,10 +9,12 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/config"
+	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
 	"github.com/b11902156/rag-gateway/gateway/internal/audit"
 	"github.com/b11902156/rag-gateway/gateway/internal/auth"
 	"github.com/b11902156/rag-gateway/gateway/internal/db"
 	"github.com/b11902156/rag-gateway/gateway/internal/handler"
+	"github.com/b11902156/rag-gateway/gateway/internal/loramanager"
 	"github.com/b11902156/rag-gateway/gateway/internal/middleware"
 	"github.com/b11902156/rag-gateway/gateway/internal/policy"
 	"github.com/b11902156/rag-gateway/gateway/internal/proxy"
@@ -64,10 +66,26 @@ func main() {
 	// Policy engine (OPA) — non-fatal if OPA endpoint is empty.
 	policyClient := policy.NewClient(cfg.OPAEndpoint)
 
-	// vLLM reverse proxy — attach retrieval client for RAG mode.
+	// Adapter Service gRPC client (non-fatal: compile mode degrades gracefully).
+	ac, err := adapter.New(cfg.AdapterAddr, logger)
+	if err != nil {
+		logger.Warn("adapter service unavailable, compile mode disabled", zap.Error(err))
+		ac = nil
+	} else {
+		defer ac.Close()
+	}
+
+	// vLLM LoRA session manager (always created; noop if adapter client is absent).
+	loraMgr := loramanager.New(cfg.VLLMEndpoint, logger)
+
+	// vLLM reverse proxy — attach retrieval, policy, adapter, and LoRA manager.
 	vllmProxy := proxy.New(cfg.VLLMEndpoint, logger).WithPolicy(policyClient)
 	if rc != nil {
 		vllmProxy.WithRetrieval(rc)
+	}
+	if ac != nil {
+		vllmProxy.WithAdapter(ac, cfg.AdapterStorePath)
+		vllmProxy.WithLoraManager(loraMgr)
 	}
 
 	r := gin.New()

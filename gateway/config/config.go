@@ -15,6 +15,8 @@ type Config struct {
 	RedisAddr         string
 	OPAEndpoint       string
 	RetrievalAddr     string
+	AdapterAddr       string // gRPC address of the Adapter Service
+	AdapterStorePath  string // shared FS path where Adapter Service writes PEFT dirs
 	JWTSecret         string
 	JWTPublicKeyPath  string // path to RSA public key PEM (enables RS256)
 	VLLMEndpoint      string
@@ -30,8 +32,10 @@ func Load() *Config {
 		PostgresPass:  envOrDefault("POSTGRES_PASSWORD", "changeme"),
 		PostgresDB:    envOrDefault("POSTGRES_DB", "raggateway"),
 		RedisAddr:     envOrDefault("REDIS_ADDR", "localhost:6379"),
-		OPAEndpoint:   envOrDefault("OPA_ENDPOINT", "http://localhost:8181"),
-		RetrievalAddr: envOrDefault("RETRIEVAL_ADDR", "localhost:50051"),
+		OPAEndpoint:      envOrDefault("OPA_ENDPOINT", "http://localhost:8181"),
+		RetrievalAddr:    envOrDefault("RETRIEVAL_ADDR", "localhost:50051"),
+		AdapterAddr:      envOrDefault("ADAPTER_ADDR", "localhost:50053"),
+		AdapterStorePath: envOrDefault("ADAPTER_STORE_PATH", "/tmp/adapters"),
 		JWTSecret:        envOrDefault("JWT_SECRET", "changeme"),
 		JWTPublicKeyPath: envOrDefault("JWT_PUBLIC_KEY_PATH", ""),
 		VLLMEndpoint:     envOrDefault("VLLM_ENDPOINT", "http://localhost:8000"),

@@ -16,8 +16,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
 	"github.com/b11902156/rag-gateway/gateway/internal/circuitbreaker"
 	"github.com/b11902156/rag-gateway/gateway/internal/firewall"
+	"github.com/b11902156/rag-gateway/gateway/internal/loramanager"
 	"github.com/b11902156/rag-gateway/gateway/internal/policy"
 	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
 )
@@ -43,6 +45,11 @@ type Proxy struct {
 	retrieval Retriever // optional; nil means direct proxy (no RAG)
 	fw        *firewall.ContextFirewall
 	policy    *policy.Client
+
+	// Compile-mode fields (optional; nil disables compile mode).
+	adapterClient    *adapter.Client
+	adapterStorePath string       // shared filesystem path where Adapter Service writes PEFT dirs
+	lora             *loramanager.Manager
 }
 
 // New creates a Proxy with a circuit breaker (5 failures → OPEN, 30 s reset).

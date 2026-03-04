@@ -49,18 +49,9 @@ func (h *Handler) Query(c *gin.Context) {
 
 // Compile handles compile-to-LoRA requests.
 func (h *Handler) Compile(c *gin.Context) {
-	var req struct {
-		Query      string `json:"query" binding:"required"`
-		TTLSeconds int    `json:"ttl_seconds"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+	if h.proxy == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "compile mode not configured"})
 		return
 	}
-
-	// TODO: Policy check → Retrieval → Adapter compile → Verify → Load LoRA
-	c.JSON(http.StatusOK, gin.H{
-		"adapter_id": "stub",
-		"trace_id":   c.GetString("trace_id"),
-	})
+	h.proxy.Compile(c)
 }
