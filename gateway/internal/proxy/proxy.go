@@ -19,6 +19,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
+	"github.com/b11902156/rag-gateway/gateway/internal/adapterstore"
 	"github.com/b11902156/rag-gateway/gateway/internal/circuitbreaker"
 	"github.com/b11902156/rag-gateway/gateway/internal/firewall"
 	"github.com/b11902156/rag-gateway/gateway/internal/loramanager"
@@ -52,8 +53,9 @@ type Proxy struct {
 
 	// Compile-mode fields (optional; nil disables compile mode).
 	adapterClient    *adapter.Client
-	adapterStorePath string       // shared filesystem path where Adapter Service writes PEFT dirs
+	adapterStorePath string              // shared filesystem path where Adapter Service writes PEFT dirs
 	lora             *loramanager.Manager
+	adapterStore     *adapterstore.Store // lineage persistence (nil = noop)
 }
 
 // New creates a Proxy with a circuit breaker (5 failures → OPEN, 30 s reset).

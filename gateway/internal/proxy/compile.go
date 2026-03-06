@@ -11,10 +11,17 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
+	"github.com/b11902156/rag-gateway/gateway/internal/adapterstore"
 	"github.com/b11902156/rag-gateway/gateway/internal/loramanager"
 	"github.com/b11902156/rag-gateway/gateway/internal/metrics"
 	"github.com/b11902156/rag-gateway/gateway/internal/telemetry"
 )
+
+// WithAdapterStore attaches the adapter lineage store for Postgres persistence.
+func (p *Proxy) WithAdapterStore(s *adapterstore.Store) *Proxy {
+	p.adapterStore = s
+	return p
+}
 
 // WithAdapter attaches an Adapter Service client and the shared adapter filesystem path.
 // adapterStorePath is the directory where the Adapter Service writes PEFT directories;
@@ -159,6 +166,9 @@ func (p *Proxy) Compile(c *gin.Context) {
 			p.logger.Error("compile: revoke after probe failure",
 				zap.String("adapter_id", result.AdapterID), zap.Error(rErr))
 		}
+		if p.adapterStore != nil {
+			p.adapterStore.Revoke(result.AdapterID, "canary_probe_failure")
+		}
 		failedProbes := make([]gin.H, 0, len(probes))
 		for _, pr := range probes {
 			if !pr.Passed {
@@ -192,6 +202,11 @@ func (p *Proxy) Compile(c *gin.Context) {
 	}
 	loraSpan.SetAttributes(attribute.String("adapter_id", result.AdapterID))
 	loraSpan.End()
+
+	// Persist lineage record now that the adapter is active in vLLM.
+	if p.adapterStore != nil {
+		p.adapterStore.Record(result.AdapterID, sessionID, result.Signature, sectionIDs, probes, expiresAt)
+	}
 
 	p.logger.Info("compile: adapter active",
 		zap.String("trace_id", traceID),

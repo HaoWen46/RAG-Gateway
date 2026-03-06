@@ -27,8 +27,9 @@ type Manager struct {
 	client       *http.Client
 	logger       *zap.Logger
 
-	mu       sync.Mutex
-	sessions map[string]*session // sessionID → active session
+	mu          sync.Mutex
+	sessions    map[string]*session    // sessionID → active session
+	revokeHook  func(adapterID, reason string) // optional; called on TTL expiry
 }
 
 // New creates a Manager targeting the given vLLM base endpoint (e.g. "http://localhost:8000").
@@ -39,6 +40,14 @@ func New(vllmEndpoint string, logger *zap.Logger) *Manager {
 		logger:       logger,
 		sessions:     make(map[string]*session),
 	}
+}
+
+// SetRevokeHook registers a callback invoked when a session's TTL expires and the adapter
+// is auto-unloaded. The callback receives the adapter name and reason "ttl_expired".
+func (m *Manager) SetRevokeHook(fn func(adapterID, reason string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.revokeHook = fn
 }
 
 // Load calls vLLM /v1/load_lora_adapter and schedules an auto-unload goroutine at expiresAt.
@@ -75,6 +84,12 @@ func (m *Manager) Load(sessionID, adapterName, adapterPath string, expiresAt tim
 			if err := m.Unload(sessionID); err != nil {
 				m.logger.Warn("loramanager: auto-unload failed",
 					zap.String("session_id", sessionID), zap.Error(err))
+			}
+			m.mu.Lock()
+			hook := m.revokeHook
+			m.mu.Unlock()
+			if hook != nil {
+				hook(adapterName, "ttl_expired")
 			}
 		case <-ctx.Done():
 			// Cancelled by an explicit Unload call — nothing to do.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/b11902156/rag-gateway/gateway/config"
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
+	"github.com/b11902156/rag-gateway/gateway/internal/adapterstore"
 	"github.com/b11902156/rag-gateway/gateway/internal/audit"
 	"github.com/b11902156/rag-gateway/gateway/internal/cache"
 	"github.com/b11902156/rag-gateway/gateway/internal/telemetry"
@@ -59,6 +60,9 @@ func main() {
 	}
 
 	auditLogger := audit.New(logger, pgPool)
+
+	// Adapter lineage store (non-fatal: degrades gracefully if DB is unavailable).
+	adapterStore := adapterstore.New(pgPool, logger)
 
 	// RSA public key for RS256 (optional; HS256 used when absent).
 	rsaKey, err := auth.LoadRSAPublicKey(cfg.JWTPublicKeyPath)
@@ -117,6 +121,9 @@ func main() {
 	if ac != nil {
 		vllmProxy.WithAdapter(ac, cfg.AdapterStorePath)
 		vllmProxy.WithLoraManager(loraMgr)
+		vllmProxy.WithAdapterStore(adapterStore)
+		// Hook loramanager TTL expiry into adapter lineage revocation.
+		loraMgr.SetRevokeHook(adapterStore.Revoke)
 	}
 
 	r := gin.New()
