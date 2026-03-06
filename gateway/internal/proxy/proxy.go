@@ -20,6 +20,7 @@ import (
 	"github.com/b11902156/rag-gateway/gateway/internal/circuitbreaker"
 	"github.com/b11902156/rag-gateway/gateway/internal/firewall"
 	"github.com/b11902156/rag-gateway/gateway/internal/loramanager"
+	"github.com/b11902156/rag-gateway/gateway/internal/metrics"
 	"github.com/b11902156/rag-gateway/gateway/internal/policy"
 	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
 )
@@ -205,15 +206,24 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 	if allowed, pErr := p.policy.CheckRetrieval(ctx, userRole, collectTrustTiers(sections)); pErr == nil && !allowed {
 		p.logger.Warn("proxy: policy denied retrieval",
 			zap.String("trace_id", traceID), zap.String("role", userRole))
+		metrics.PolicyDenied.WithLabelValues("retrieval").Inc()
 		return nil, false, fmt.Errorf("policy: retrieval denied")
 	}
 
 	// Context firewall: strip injection patterns and enforce trust-tier access.
-	sections = p.fw.SanitizeSections(sections, userRole)
+	var fwStats firewall.SanitizeStats
+	sections, fwStats = p.fw.SanitizeWithStats(sections, userRole)
+	if fwStats.SectionsRemoved > 0 {
+		metrics.FirewallSectionsBlocked.Add(float64(fwStats.SectionsRemoved))
+	}
+	if fwStats.SentencesStripped > 0 {
+		metrics.FirewallSentencesStripped.Add(float64(fwStats.SentencesStripped))
+	}
 
 	if len(sections) == 0 {
 		p.logger.Info("proxy: no sections after firewall, refusing",
 			zap.String("trace_id", traceID), zap.String("query", query))
+		metrics.CiteOrRefuse.Inc()
 		return nil, false, fmt.Errorf("cite-or-refuse: no sections")
 	}
 

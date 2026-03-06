@@ -10,6 +10,7 @@ import (
 
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
 	"github.com/b11902156/rag-gateway/gateway/internal/loramanager"
+	"github.com/b11902156/rag-gateway/gateway/internal/metrics"
 )
 
 // WithAdapter attaches an Adapter Service client and the shared adapter filesystem path.
@@ -131,6 +132,7 @@ func (p *Proxy) Compile(c *gin.Context) {
 		failedProbes := make([]gin.H, 0, len(probes))
 		for _, pr := range probes {
 			if !pr.Passed {
+				metrics.AdapterProbeFails.WithLabelValues(pr.ProbeName).Inc()
 				failedProbes = append(failedProbes, gin.H{
 					"probe":  pr.ProbeName,
 					"detail": pr.Detail,

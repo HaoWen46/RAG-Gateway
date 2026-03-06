@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/config"
@@ -93,12 +94,14 @@ func main() {
 	r.Use(middleware.TraceID())
 	r.Use(middleware.RequestLogger(logger))
 	r.Use(middleware.AuditLog(auditLogger))
+	r.Use(middleware.Metrics())
 
 	h := handler.New(probe, vllmProxy)
 
 	// Public endpoints (no auth)
 	r.GET("/health", h.Health)
 	r.GET("/ready", h.Ready)
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// Authenticated endpoints — rate limited per IP.
 	limiter := ratelimit.New(cfg.RateLimitRPM)

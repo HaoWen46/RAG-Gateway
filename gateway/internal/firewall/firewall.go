@@ -85,6 +85,47 @@ func (f *ContextFirewall) Sanitize(text string) string {
 	return stripInjections(text)
 }
 
+// SanitizeStats records what the firewall removed during a sanitisation pass.
+type SanitizeStats struct {
+	SectionsRemoved   int // sections dropped entirely (trust-tier gate or all-hostile content)
+	SentencesStripped int // sentences stripped from surviving sections
+}
+
+// SanitizeWithStats behaves identically to SanitizeSections but also returns
+// a SanitizeStats value so callers can update telemetry counters.
+func (f *ContextFirewall) SanitizeWithStats(sections []retrieval.Section, userRole string) ([]retrieval.Section, SanitizeStats) {
+	maxTier := roleMaxTier[userRole]
+	out := make([]retrieval.Section, 0, len(sections))
+	var stats SanitizeStats
+
+	for _, s := range sections {
+		tier, ok := trustTierRank[strings.ToLower(s.TrustTier)]
+		if !ok {
+			tier = 0
+		}
+		if tier > maxTier {
+			stats.SectionsRemoved++
+			continue
+		}
+
+		before := len(splitSentences(s.Content))
+		clean := stripInjections(s.Content)
+		after := len(splitSentences(clean))
+		stripped := before - after
+		if stripped > 0 {
+			stats.SentencesStripped += stripped
+		}
+
+		if strings.TrimSpace(clean) == "" {
+			stats.SectionsRemoved++
+			continue
+		}
+		s.Content = clean
+		out = append(out, s)
+	}
+	return out, stats
+}
+
 // stripInjections removes sentences that contain injection patterns.
 // Sentences are split on ". ", "! ", "? ", "\n" boundaries.
 func stripInjections(text string) string {
