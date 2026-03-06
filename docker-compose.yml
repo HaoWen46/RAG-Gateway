@@ -16,6 +16,14 @@ services:
     ports:
       - "6379:6379"
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
   gateway:
     build: ./gateway
     ports:
@@ -26,9 +34,12 @@ services:
       OPA_ENDPOINT: http://opa:8181
       RETRIEVAL_ADDR: retrieval:50051
       GATEWAY_PORT: "8080"
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      OTEL_SERVICE_NAME: rag-gateway
     depends_on:
       - postgres
       - redis
+      - jaeger
 
   retrieval:
     build: ./retrieval

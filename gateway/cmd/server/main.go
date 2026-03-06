@@ -12,6 +12,7 @@ import (
 	"github.com/b11902156/rag-gateway/gateway/config"
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
 	"github.com/b11902156/rag-gateway/gateway/internal/audit"
+	"github.com/b11902156/rag-gateway/gateway/internal/telemetry"
 	"github.com/b11902156/rag-gateway/gateway/internal/auth"
 	"github.com/b11902156/rag-gateway/gateway/internal/db"
 	"github.com/b11902156/rag-gateway/gateway/internal/handler"
@@ -35,6 +36,18 @@ func main() {
 
 	// Postgres (non-fatal: gateway degrades gracefully without DB).
 	ctx := context.Background()
+
+	// OpenTelemetry tracing (non-fatal: gateway works without a collector).
+	otelShutdown, err := telemetry.Setup(ctx, "rag-gateway", cfg.OTelEndpoint)
+	if err != nil {
+		logger.Warn("telemetry setup failed, tracing disabled", zap.Error(err))
+	} else {
+		defer func() {
+			if sErr := otelShutdown(ctx); sErr != nil {
+				logger.Warn("telemetry shutdown error", zap.Error(sErr))
+			}
+		}()
+	}
 	var pgPool *pgxpool.Pool
 	dbPool, err := db.New(ctx, cfg.PostgresHost, cfg.PostgresPort, cfg.PostgresUser, cfg.PostgresPass, cfg.PostgresDB)
 	if err != nil {
@@ -92,6 +105,7 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.TraceID())
+	r.Use(middleware.OTelSpan())
 	r.Use(middleware.RequestLogger(logger))
 	r.Use(middleware.AuditLog(auditLogger))
 	r.Use(middleware.Metrics())

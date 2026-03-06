@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
@@ -23,6 +25,7 @@ import (
 	"github.com/b11902156/rag-gateway/gateway/internal/metrics"
 	"github.com/b11902156/rag-gateway/gateway/internal/policy"
 	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
+	"github.com/b11902156/rag-gateway/gateway/internal/telemetry"
 )
 
 const (
@@ -148,9 +151,16 @@ func (p *Proxy) Query(c *gin.Context) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Trace-ID", traceID)
 
+	// Span: vllm.forward — wraps the upstream HTTP call.
+	fwdCtx, vllmSpan := telemetry.Tracer().Start(c.Request.Context(), "vllm.forward")
+	req = req.WithContext(fwdCtx)
+
 	start := time.Now()
 	resp, err := p.client.Do(req)
 	if err != nil {
+		vllmSpan.RecordError(err)
+		vllmSpan.SetStatus(otelcodes.Error, err.Error())
+		vllmSpan.End()
 		p.logger.Warn("proxy: upstream unreachable", zap.String("trace_id", traceID), zap.Error(err))
 		p.cb.Failure()
 		if errors.Is(err, context.Canceled) {
@@ -160,6 +170,8 @@ func (p *Proxy) Query(c *gin.Context) {
 		return
 	}
 	defer resp.Body.Close()
+	vllmSpan.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+	vllmSpan.End()
 
 	if resp.StatusCode >= 500 {
 		p.logger.Warn("proxy: upstream error", zap.String("trace_id", traceID), zap.Int("status", resp.StatusCode))
@@ -188,31 +200,51 @@ func (p *Proxy) Query(c *gin.Context) {
 // was injected, and an error if the request must be rejected (cite-or-refuse / policy).
 // userRole is the JWT role claim used by the context firewall for trust-tier filtering.
 func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID, userRole string) (map[string]any, bool, error) {
+	tracer := telemetry.Tracer()
+
 	query := extractLastUserQuery(payload)
 	if query == "" {
 		// No user message — skip retrieval (let vLLM handle as-is).
 		return payload, false, nil
 	}
 
+	// Span: rag.retrieve
+	_, retrieveSpan := tracer.Start(ctx, "rag.retrieve")
 	sections, err := p.retrieval.Retrieve(ctx, query, traceID, ragTopK)
 	if err != nil {
+		retrieveSpan.RecordError(err)
+		retrieveSpan.SetStatus(otelcodes.Error, err.Error())
+		retrieveSpan.End()
 		p.logger.Warn("proxy: retrieval failed, continuing without RAG",
 			zap.String("trace_id", traceID), zap.Error(err))
 		// Degrade gracefully: if retrieval service is down, skip cite-or-refuse.
 		return payload, false, nil
 	}
+	retrieveSpan.SetAttributes(attribute.Int("sections.count", len(sections)))
+	retrieveSpan.End()
 
-	// Policy gate: ask OPA whether this role may access the retrieved tiers.
-	if allowed, pErr := p.policy.CheckRetrieval(ctx, userRole, collectTrustTiers(sections)); pErr == nil && !allowed {
+	// Span: rag.policy.check
+	_, policySpan := tracer.Start(ctx, "rag.policy.check")
+	allowed, pErr := p.policy.CheckRetrieval(ctx, userRole, collectTrustTiers(sections))
+	if pErr == nil && !allowed {
+		policySpan.SetStatus(otelcodes.Error, "retrieval denied")
+		policySpan.End()
 		p.logger.Warn("proxy: policy denied retrieval",
 			zap.String("trace_id", traceID), zap.String("role", userRole))
 		metrics.PolicyDenied.WithLabelValues("retrieval").Inc()
 		return nil, false, fmt.Errorf("policy: retrieval denied")
 	}
+	policySpan.End()
 
-	// Context firewall: strip injection patterns and enforce trust-tier access.
+	// Span: rag.firewall — strip injection patterns and enforce trust-tier access.
+	_, firewallSpan := tracer.Start(ctx, "rag.firewall")
 	var fwStats firewall.SanitizeStats
 	sections, fwStats = p.fw.SanitizeWithStats(sections, userRole)
+	firewallSpan.SetAttributes(
+		attribute.Int("sections.removed", fwStats.SectionsRemoved),
+		attribute.Int("sentences.stripped", fwStats.SentencesStripped),
+	)
+	firewallSpan.End()
 	if fwStats.SectionsRemoved > 0 {
 		metrics.FirewallSectionsBlocked.Add(float64(fwStats.SectionsRemoved))
 	}

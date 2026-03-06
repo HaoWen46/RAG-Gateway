@@ -21,6 +21,7 @@ type Config struct {
 	JWTPublicKeyPath  string // path to RSA public key PEM (enables RS256)
 	VLLMEndpoint      string
 	RateLimitRPM      int    // per-IP requests per minute (default 60)
+	OTelEndpoint      string // OTLP gRPC endpoint, e.g. "localhost:4317" (empty = disabled)
 }
 
 func Load() *Config {
@@ -40,6 +41,7 @@ func Load() *Config {
 		JWTPublicKeyPath: envOrDefault("JWT_PUBLIC_KEY_PATH", ""),
 		VLLMEndpoint:     envOrDefault("VLLM_ENDPOINT", "http://localhost:8000"),
 		RateLimitRPM:     envOrDefaultInt("RATE_LIMIT_RPM", 60),
+		OTelEndpoint:     envOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 	}
 }
 

@@ -6,11 +6,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
 	"github.com/b11902156/rag-gateway/gateway/internal/loramanager"
 	"github.com/b11902156/rag-gateway/gateway/internal/metrics"
+	"github.com/b11902156/rag-gateway/gateway/internal/telemetry"
 )
 
 // WithAdapter attaches an Adapter Service client and the shared adapter filesystem path.
@@ -65,18 +68,25 @@ func (p *Proxy) Compile(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	tracer := telemetry.Tracer()
 
 	// Step 1: Retrieve relevant sections.
 	if p.retrieval == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "retrieval service not configured"})
 		return
 	}
+	_, retrieveSpan := tracer.Start(ctx, "rag.retrieve")
 	sections, err := p.retrieval.Retrieve(ctx, req.Query, traceID, ragTopK)
 	if err != nil {
+		retrieveSpan.RecordError(err)
+		retrieveSpan.SetStatus(otelcodes.Error, err.Error())
+		retrieveSpan.End()
 		p.logger.Warn("compile: retrieval failed", zap.String("trace_id", traceID), zap.Error(err))
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "retrieval service unavailable"})
 		return
 	}
+	retrieveSpan.SetAttributes(attribute.Int("sections.count", len(sections)))
+	retrieveSpan.End()
 	if len(sections) == 0 {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"error":         "no relevant content found for compilation",
@@ -86,7 +96,10 @@ func (p *Proxy) Compile(c *gin.Context) {
 	}
 
 	// Step 2: Context firewall — enforce trust-tier access.
+	_, firewallSpan := tracer.Start(ctx, "rag.firewall")
 	sections = p.fw.SanitizeSections(sections, userRole)
+	firewallSpan.SetAttributes(attribute.Int("sections.after", len(sections)))
+	firewallSpan.End()
 	if len(sections) == 0 {
 		c.JSON(http.StatusForbidden, gin.H{"error": "no accessible sections after trust-tier filter"})
 		return
@@ -98,30 +111,47 @@ func (p *Proxy) Compile(c *gin.Context) {
 	}
 
 	// Step 3: Policy gate.
-	if allowed, pErr := p.policy.CheckCompile(ctx, userRole, sectionIDs); pErr == nil && !allowed {
+	_, policySpan := tracer.Start(ctx, "rag.policy.check_compile")
+	allowed, pErr := p.policy.CheckCompile(ctx, userRole, sectionIDs)
+	if pErr == nil && !allowed {
+		policySpan.SetStatus(otelcodes.Error, "compile denied")
+		policySpan.End()
 		p.logger.Warn("compile: policy denied",
 			zap.String("trace_id", traceID), zap.String("role", userRole))
 		c.JSON(http.StatusForbidden, gin.H{"error": "compile access denied by policy"})
 		return
 	}
+	policySpan.End()
 
 	// Step 4: Compile adapter via Adapter Service.
+	_, compileSpan := tracer.Start(ctx, "adapter.compile")
 	result, err := p.adapterClient.Compile(ctx, sessionID, traceID, sectionIDs, req.TTLSeconds)
 	if err != nil {
+		compileSpan.RecordError(err)
+		compileSpan.SetStatus(otelcodes.Error, err.Error())
+		compileSpan.End()
 		p.logger.Error("compile: adapter compile failed",
 			zap.String("trace_id", traceID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "adapter compilation failed"})
 		return
 	}
+	compileSpan.SetAttributes(attribute.String("adapter_id", result.AdapterID))
+	compileSpan.End()
 
 	// Step 5: Verify integrity and run canary probes.
+	_, verifySpan := tracer.Start(ctx, "adapter.verify")
 	valid, probes, err := p.adapterClient.Verify(ctx, result.AdapterID, result.Signature)
 	if err != nil {
+		verifySpan.RecordError(err)
+		verifySpan.SetStatus(otelcodes.Error, err.Error())
+		verifySpan.End()
 		p.logger.Error("compile: adapter verify failed",
 			zap.String("trace_id", traceID), zap.String("adapter_id", result.AdapterID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "adapter verification error"})
 		return
 	}
+	verifySpan.SetAttributes(attribute.Bool("valid", valid))
+	verifySpan.End()
 	if !valid {
 		p.logger.Warn("compile: adapter failed canary probes, revoking",
 			zap.String("trace_id", traceID), zap.String("adapter_id", result.AdapterID))
@@ -148,14 +178,20 @@ func (p *Proxy) Compile(c *gin.Context) {
 	}
 
 	// Step 6: Load adapter into vLLM.
+	_, loraSpan := tracer.Start(ctx, "vllm.load_lora")
 	adapterPath := filepath.Join(p.adapterStorePath, result.AdapterID)
 	expiresAt := time.Unix(result.ExpiresAt, 0)
 	if err := p.lora.Load(sessionID, result.AdapterID, adapterPath, expiresAt); err != nil {
+		loraSpan.RecordError(err)
+		loraSpan.SetStatus(otelcodes.Error, err.Error())
+		loraSpan.End()
 		p.logger.Error("compile: vLLM load failed",
 			zap.String("trace_id", traceID), zap.String("adapter_id", result.AdapterID), zap.Error(err))
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to activate adapter in vLLM"})
 		return
 	}
+	loraSpan.SetAttributes(attribute.String("adapter_id", result.AdapterID))
+	loraSpan.End()
 
 	p.logger.Info("compile: adapter active",
 		zap.String("trace_id", traceID),
