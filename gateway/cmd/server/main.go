@@ -12,6 +12,7 @@ import (
 	"github.com/b11902156/rag-gateway/gateway/config"
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
 	"github.com/b11902156/rag-gateway/gateway/internal/audit"
+	"github.com/b11902156/rag-gateway/gateway/internal/cache"
 	"github.com/b11902156/rag-gateway/gateway/internal/telemetry"
 	"github.com/b11902156/rag-gateway/gateway/internal/auth"
 	"github.com/b11902156/rag-gateway/gateway/internal/db"
@@ -77,6 +78,22 @@ func main() {
 		defer rc.Close()
 	}
 
+	// Redis cache for retrieval results (non-fatal: gateway works without cache).
+	var retriever proxy.Retriever
+	if rc != nil {
+		retriever = rc // default: uncached gRPC client
+		if redisCache, redisErr := cache.New(cfg.RedisAddr); redisErr != nil {
+			logger.Warn("redis unavailable, retrieval cache disabled", zap.Error(redisErr))
+		} else {
+			defer redisCache.Close()
+			retriever = retrieval.NewCachedClient(rc, redisCache, cfg.RetrievalCacheTTL, logger)
+			logger.Info("retrieval cache enabled",
+				zap.String("addr", cfg.RedisAddr),
+				zap.Duration("ttl", cfg.RetrievalCacheTTL),
+			)
+		}
+	}
+
 	// Policy engine (OPA) — non-fatal if OPA endpoint is empty.
 	policyClient := policy.NewClient(cfg.OPAEndpoint)
 
@@ -94,8 +111,8 @@ func main() {
 
 	// vLLM reverse proxy — attach retrieval, policy, adapter, and LoRA manager.
 	vllmProxy := proxy.New(cfg.VLLMEndpoint, logger).WithPolicy(policyClient)
-	if rc != nil {
-		vllmProxy.WithRetrieval(rc)
+	if retriever != nil {
+		vllmProxy.WithRetrieval(retriever)
 	}
 	if ac != nil {
 		vllmProxy.WithAdapter(ac, cfg.AdapterStorePath)

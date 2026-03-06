@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -20,8 +21,9 @@ type Config struct {
 	JWTSecret         string
 	JWTPublicKeyPath  string // path to RSA public key PEM (enables RS256)
 	VLLMEndpoint      string
-	RateLimitRPM      int    // per-IP requests per minute (default 60)
-	OTelEndpoint      string // OTLP gRPC endpoint, e.g. "localhost:4317" (empty = disabled)
+	RateLimitRPM      int           // per-IP requests per minute (default 60)
+	OTelEndpoint      string        // OTLP gRPC endpoint, e.g. "localhost:4317" (empty = disabled)
+	RetrievalCacheTTL time.Duration // TTL for retrieval cache entries (default 5 min)
 }
 
 func Load() *Config {
@@ -40,8 +42,9 @@ func Load() *Config {
 		JWTSecret:        envOrDefault("JWT_SECRET", "changeme"),
 		JWTPublicKeyPath: envOrDefault("JWT_PUBLIC_KEY_PATH", ""),
 		VLLMEndpoint:     envOrDefault("VLLM_ENDPOINT", "http://localhost:8000"),
-		RateLimitRPM:     envOrDefaultInt("RATE_LIMIT_RPM", 60),
-		OTelEndpoint:     envOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		RateLimitRPM:      envOrDefaultInt("RATE_LIMIT_RPM", 60),
+		OTelEndpoint:      envOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		RetrievalCacheTTL: time.Duration(envOrDefaultInt("RETRIEVAL_CACHE_TTL_SECONDS", 300)) * time.Second,
 	}
 }
 
