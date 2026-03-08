@@ -72,7 +72,7 @@ func TestCheckOutput_Allow(t *testing.T) {
 	defer srv.Close()
 
 	c := policy.NewClient(srv.URL)
-	ok, err := c.CheckOutput(context.Background(), "viewer", true)
+	ok, err := c.CheckOutput(context.Background(), true, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
