@@ -1,0 +1,169 @@
+{
+  "title": "RAG Gateway",
+  "uid": "rag-gateway",
+  "version": 1,
+  "schemaVersion": 38,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[1m])) by (path)",
+          "legendFormat": "{{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Request Latency p50 / p95 / p99",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[1m])) by (le, path))",
+          "legendFormat": "p50 {{path}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le, path))",
+          "legendFormat": "p95 {{path}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[1m])) by (le, path))",
+          "legendFormat": "p99 {{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "color": { "mode": "palette-classic" } }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Error Rate (5xx)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status_class=\"5xx\"}[1m])) by (path)",
+          "legendFormat": "5xx {{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "fixedColor": "red", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Policy Denials / s",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(rag_policy_denied_total[1m])) by (reason)",
+          "legendFormat": "denied: {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "fixedColor": "orange", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Firewall Blocks / s",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(rag_firewall_sections_blocked_total[1m])",
+          "legendFormat": "sections blocked"
+        },
+        {
+          "expr": "rate(rag_firewall_sentences_stripped_total[1m])",
+          "legendFormat": "sentences stripped"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Cite-or-Refuse Rejections / s",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(rag_cite_or_refuse_total[1m])",
+          "legendFormat": "cite-or-refuse"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "color": { "fixedColor": "yellow", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Adapter Probe Failures / s",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(adapter_probe_failures_total[1m])) by (probe_name)",
+          "legendFormat": "probe: {{probe_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "color": { "fixedColor": "dark-red", "mode": "fixed" } }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Total Requests (all time)",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 16, "w": 4, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(http_requests_total)", "legendFormat": "" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]}
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Total Policy Denials (all time)",
+      "type": "stat",
+      "gridPos": { "x": 20, "y": 16, "w": 4, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(rag_policy_denied_total)", "legendFormat": "" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 1 }
+          ]}
+        }
+      }
+    }
+  ]
+}

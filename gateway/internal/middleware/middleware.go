@@ -45,15 +45,18 @@ func RequestLogger(logger *zap.Logger) gin.HandlerFunc {
 	}
 }
 
-// Metrics records an http_requests_total Prometheus counter after each request.
-// The "path" label uses the matched route pattern (e.g. "/api/v1/query"),
-// and "status_class" is "2xx", "4xx", "5xx", etc.
+// Metrics records http_requests_total and http_request_duration_seconds after
+// each request. The "path" label uses the matched route pattern (e.g.
+// "/api/v1/query") and "status_class" is "2xx", "4xx", "5xx", etc.
 func Metrics() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		start := time.Now()
 		c.Next()
 		status := c.Writer.Status()
 		statusClass := strconv.Itoa(status/100) + "xx"
-		metrics.RequestsTotal.WithLabelValues(c.FullPath(), statusClass).Inc()
+		path := c.FullPath()
+		metrics.RequestsTotal.WithLabelValues(path, statusClass).Inc()
+		metrics.RequestDuration.WithLabelValues(path, statusClass).Observe(time.Since(start).Seconds())
 	}
 }
 

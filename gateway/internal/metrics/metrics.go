@@ -56,4 +56,12 @@ var (
 		Name: "http_requests_total",
 		Help: "Total HTTP requests handled by the gateway.",
 	}, []string{"path", "status_class"})
+
+	// RequestDuration tracks end-to-end request latency.
+	// Buckets cover the expected range from fast health checks to slow LLM calls.
+	RequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "http_request_duration_seconds",
+		Help:    "End-to-end HTTP request latency in seconds.",
+		Buckets: []float64{.05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60},
+	}, []string{"path", "status_class"})
 )
