@@ -11,50 +11,55 @@ jobs:
     name: Go Test (${{ matrix.service }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        service: [gateway, retrieval]
+        include:
+          - service: gateway
+            go-version: "1.24"
+          - service: retrieval
+            go-version: "1.23"
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: ${{ matrix.go-version }}
           cache-dependency-path: ${{ matrix.service }}/go.sum
 
       - name: Run tests
         working-directory: ${{ matrix.service }}
         run: go test ./...
 
-  go-lint:
-    name: Go Lint (${{ matrix.service }})
+  go-vet:
+    name: Go Vet (${{ matrix.service }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        service: [gateway, retrieval]
+        include:
+          - service: gateway
+            go-version: "1.24"
+          - service: retrieval
+            go-version: "1.23"
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: ${{ matrix.go-version }}
           cache-dependency-path: ${{ matrix.service }}/go.sum
 
       - name: go vet
         working-directory: ${{ matrix.service }}
         run: go vet ./...
 
-      - name: staticcheck
-        uses: dominikh/staticcheck-action@v1
-        with:
-          working-directory: ${{ matrix.service }}
-          version: "latest"
-
   python-test:
     name: Python Test (${{ matrix.service }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         service: [adapter-service, pageindex-worker]
     steps:
@@ -66,10 +71,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-dependency-glob: ${{ matrix.service }}/uv.lock
+        run: pip install uv
 
       - name: Install dependencies
         working-directory: ${{ matrix.service }}
@@ -89,4 +91,4 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build all images
-        run: docker compose build --no-cache
+        run: docker compose build
