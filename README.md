@@ -102,7 +102,27 @@ cd pageindex-worker && uv run pytest tests/ -v
 
 # E2E integration test (requires running stack)
 GATEWAY_URL=http://localhost:8080 JWT_SECRET=changeme ./scripts/e2e-test.sh
+
+# Practical evaluation (requires running stack + vLLM)
+GATEWAY_URL=http://localhost:8080 JWT_SECRET=changeme ./scripts/eval.sh
 ```
+
+### Evaluation
+
+`scripts/eval.sh` runs a seven-phase practical evaluation against a live stack:
+
+| Phase | What it tests |
+|---|---|
+| 0 | Pre-flight: gateway health, vLLM reachability |
+| 1 | Corpus ingestion: 7 documents across 4 trust tiers |
+| 2 | RAG quality: 20 eval queries → citation hit rate, latency p50/p95 |
+| 3 | Trust-tier access control: viewer blocked from internal/confidential docs |
+| 4 | Injection attacks: 6 adversarial inputs + streaming bypass |
+| 5 | Poisoned document: injection-laden doc ingested, queried, response checked |
+| 6 | Rate limiting: 75-request burst test |
+| 7 | Prometheus metrics: all 8 counters/histograms present and non-zero |
+
+Results are written to `eval-results/report.json` (gitignored). Phases 2 and 5 are skipped automatically when vLLM is unavailable — the other phases run in retrieval-only mode.
 
 ## Milestones
 
@@ -125,6 +145,7 @@ GATEWAY_URL=http://localhost:8080 JWT_SECRET=changeme ./scripts/e2e-test.sh
 | 15 | Security bug fixes: OPA field mismatch, streaming cite-or-refuse bypass, dead `CheckOutput` |
 | 16 | Citation verification — `[doc:id, sec:id]` validated against retrieved set; hallucinated citations rejected |
 | 17 | Hybrid retrieval — BM25 + sentence-transformers cosine similarity combined via Reciprocal Rank Fusion |
+| 18 | Practical evaluation — 7-doc test corpus, 20 eval queries, security attack suite, `scripts/eval.sh` |
 
 ## References
 

@@ -36,3 +36,6 @@ Thumbs.db
 
 # Claude / AI agent
 .claude/
+
+# Evaluation output (generated at runtime, not committed)
+eval-results/

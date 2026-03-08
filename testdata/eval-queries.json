@@ -1,0 +1,202 @@
+[
+  {
+    "id": "q01",
+    "query": "How are JWT tokens validated by the gateway?",
+    "expected_doc": "security-policy",
+    "expected_keywords": ["JWT", "HS256", "exp", "401"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "Direct factual — Authentication section"
+  },
+  {
+    "id": "q02",
+    "query": "What happens when the rate limit is exceeded?",
+    "expected_doc": "security-policy",
+    "expected_keywords": ["429", "Retry-After", "token bucket"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "Rate Limiting section"
+  },
+  {
+    "id": "q03",
+    "query": "How does the circuit breaker protect the LLM backend?",
+    "expected_doc": "security-policy",
+    "expected_keywords": ["circuit breaker", "OPEN", "5", "30"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "Circuit Breaker section"
+  },
+  {
+    "id": "q04",
+    "query": "How does the gateway prevent hallucinated citations?",
+    "expected_doc": "security-policy",
+    "expected_keywords": ["citation", "hallucinated", "section_id", "422"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "Cite-or-Refuse section"
+  },
+  {
+    "id": "q05",
+    "query": "What are the request parameters for the RAG query endpoint?",
+    "expected_doc": "api-reference",
+    "expected_keywords": ["messages", "model", "4 MB", "/api/v1/query"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "POST /api/v1/query section"
+  },
+  {
+    "id": "q06",
+    "query": "How do I ingest a document and what role do I need?",
+    "expected_doc": "api-reference",
+    "expected_keywords": ["ingest", "admin", "analyst", "document_id", "trust_tier"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "POST /api/v1/ingest section"
+  },
+  {
+    "id": "q07",
+    "query": "What HTTP status code does the readiness endpoint return when vLLM is down?",
+    "expected_doc": "api-reference",
+    "expected_keywords": ["503", "ready", "upstream unavailable"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "GET /ready section"
+  },
+  {
+    "id": "q08",
+    "query": "Which Prometheus metrics does the gateway expose?",
+    "expected_doc": "api-reference",
+    "expected_keywords": ["http_requests_total", "rag_firewall", "adapter_probe_failures"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "GET /metrics section"
+  },
+  {
+    "id": "q09",
+    "query": "What is a P1 incident and what is the response SLO?",
+    "expected_doc": "incident-response",
+    "expected_keywords": ["P1", "5 minutes", "breach", "unavailable"],
+    "role": "analyst",
+    "trust_tier": "internal",
+    "cross_doc": false,
+    "notes": "Severity Classification section — requires analyst role"
+  },
+  {
+    "id": "q10",
+    "query": "What steps should I take during a P1 incident?",
+    "expected_doc": "incident-response",
+    "expected_keywords": ["rollback", "freeze", "revoke", "preserve", "notify"],
+    "role": "analyst",
+    "trust_tier": "internal",
+    "cross_doc": false,
+    "notes": "P1 Response Procedure section"
+  },
+  {
+    "id": "q11",
+    "query": "How does the system mitigate prompt injection attacks?",
+    "expected_doc": "threat-model",
+    "expected_keywords": ["LLM01", "context firewall", "sentence-level", "12"],
+    "role": "analyst",
+    "trust_tier": "internal",
+    "cross_doc": false,
+    "notes": "LLM01 section"
+  },
+  {
+    "id": "q12",
+    "query": "What controls prevent sensitive documents from leaking through the LLM?",
+    "expected_doc": "threat-model",
+    "expected_keywords": ["LLM06", "trust tier", "viewer", "analyst", "admin"],
+    "role": "analyst",
+    "trust_tier": "internal",
+    "cross_doc": false,
+    "notes": "LLM06 section"
+  },
+  {
+    "id": "q13",
+    "query": "How often should the JWT secret be rotated and how?",
+    "expected_doc": "credentials-rotation",
+    "expected_keywords": ["90 days", "openssl", "JWT_SECRET", "invalidated"],
+    "role": "admin",
+    "trust_tier": "confidential",
+    "cross_doc": false,
+    "notes": "JWT Secret Rotation — requires admin role (confidential doc)"
+  },
+  {
+    "id": "q14",
+    "query": "What should I do if a credential is suspected to be compromised?",
+    "expected_doc": "credentials-rotation",
+    "expected_keywords": ["emergency", "revoke", "deny-all", "rotate", "suspicion"],
+    "role": "admin",
+    "trust_tier": "confidential",
+    "cross_doc": false,
+    "notes": "Emergency Rotation section"
+  },
+  {
+    "id": "q15",
+    "query": "Why was Go chosen for the gateway instead of Python?",
+    "expected_doc": "architecture-decisions",
+    "expected_keywords": ["Go", "goroutine", "GIL", "ADR-001"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "ADR-001 section"
+  },
+  {
+    "id": "q16",
+    "query": "Why does the retrieval cache use Redis instead of an in-process cache?",
+    "expected_doc": "architecture-decisions",
+    "expected_keywords": ["Redis", "horizontal", "SHA256", "ADR-005"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "ADR-005 section"
+  },
+  {
+    "id": "q17",
+    "query": "What are the hardware requirements for running with GPU-accelerated vLLM?",
+    "expected_doc": "deployment-guide",
+    "expected_keywords": ["GPU", "VRAM", "32 GB", "16 GB"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "Hardware Requirements section"
+  },
+  {
+    "id": "q18",
+    "query": "How do I troubleshoot the gateway when retrieval returns no results?",
+    "expected_doc": "deployment-guide",
+    "expected_keywords": ["ingest", "pageindex-worker", "logs", "JSON"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": false,
+    "notes": "Troubleshooting section"
+  },
+  {
+    "id": "q19",
+    "query": "What Prometheus metrics indicate the firewall is blocking injections?",
+    "expected_doc": "api-reference",
+    "expected_keywords": ["rag_firewall_sections_blocked_total", "metrics"],
+    "role": "user",
+    "trust_tier": "public",
+    "cross_doc": true,
+    "notes": "Cross-doc: api-reference (metric names) + security-policy (firewall)"
+  },
+  {
+    "id": "q20",
+    "query": "How does the system ensure adapter LoRAs cannot leak sensitive training data?",
+    "expected_doc": "threat-model",
+    "expected_keywords": ["canary", "TTL", "revoke", "LLM10", "lineage"],
+    "role": "analyst",
+    "trust_tier": "internal",
+    "cross_doc": true,
+    "notes": "Cross-doc: threat-model (LLM10) + security-policy (adapter safety)"
+  }
+]

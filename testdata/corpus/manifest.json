@@ -1,0 +1,44 @@
+[
+  {
+    "filename": "security-policy.md",
+    "document_id": "security-policy",
+    "trust_tier": "public",
+    "metadata": { "category": "security", "owner": "security-team" }
+  },
+  {
+    "filename": "api-reference.md",
+    "document_id": "api-reference",
+    "trust_tier": "public",
+    "metadata": { "category": "documentation", "owner": "platform-team" }
+  },
+  {
+    "filename": "incident-response.md",
+    "document_id": "incident-response",
+    "trust_tier": "internal",
+    "metadata": { "category": "operations", "owner": "on-call-team" }
+  },
+  {
+    "filename": "threat-model.md",
+    "document_id": "threat-model",
+    "trust_tier": "internal",
+    "metadata": { "category": "security", "owner": "security-team" }
+  },
+  {
+    "filename": "credentials-rotation.md",
+    "document_id": "credentials-rotation",
+    "trust_tier": "confidential",
+    "metadata": { "category": "security", "owner": "security-team" }
+  },
+  {
+    "filename": "architecture-decisions.md",
+    "document_id": "architecture-decisions",
+    "trust_tier": "public",
+    "metadata": { "category": "engineering", "owner": "platform-team" }
+  },
+  {
+    "filename": "deployment-guide.md",
+    "document_id": "deployment-guide",
+    "trust_tier": "public",
+    "metadata": { "category": "operations", "owner": "platform-team" }
+  }
+]
