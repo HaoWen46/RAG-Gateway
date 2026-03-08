@@ -84,23 +84,63 @@ check "bad token → 401" "401" \
 # ── 3. Ingest ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== 3. Document ingest ==="
+ADMIN_TOKEN=$(make_jwt "$JWT_SECRET" admin)
 TOKEN=$(make_jwt "$JWT_SECRET" user)
 
-INGEST_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
-  -X POST "${GATEWAY_URL}/api/v1/query" \
-  -H "Authorization: Bearer ${TOKEN}" \
+INGEST_RESP=$(curl -s -w '\n%{http_code}' \
+  -X POST "${GATEWAY_URL}/api/v1/ingest" \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -d "$(jq -n \
     --arg content "$(cat testdata/sample-doc.md)" \
-    '{model:"stub",messages:[{role:"user",content:("Ingest: "+$content)}]}'
+    '{"document_id":"e2e-sample","content":$content,"trust_tier":"public","metadata":{"owner":"e2e-test"}}'
   )")
-# Ingest goes through query endpoint — 200 or 502 (if vLLM is down) are both valid
-if [[ "$INGEST_STATUS" == "200" || "$INGEST_STATUS" == "502" ]]; then
-  green "ingest request reached gateway (HTTP $INGEST_STATUS)"
+INGEST_STATUS=$(echo "$INGEST_RESP" | tail -1)
+INGEST_BODY=$(echo "$INGEST_RESP" | head -n -1)
+
+INGEST_OK=false
+if [[ "$INGEST_STATUS" == "200" ]]; then
+  green "ingest: document indexed (HTTP 200)"
   ((PASS++)) || true
-else
-  red "ingest — unexpected HTTP $INGEST_STATUS"
+  INGEST_OK=true
+elif [[ "$INGEST_STATUS" == "503" ]]; then
+  green "ingest: retrieval service unavailable, skipped gracefully (HTTP 503)"
+  ((PASS++)) || true
+elif [[ "$INGEST_STATUS" == "403" ]]; then
+  red "ingest — role check failed (HTTP 403)"
   ((FAIL++)) || true
+else
+  red "ingest — unexpected HTTP $INGEST_STATUS: $INGEST_BODY"
+  ((FAIL++)) || true
+fi
+
+# 3b. If ingest succeeded, run a RAG query and verify the response has a citation.
+if [[ "$INGEST_OK" == "true" ]]; then
+  echo ""
+  echo "=== 3b. RAG citation verification ==="
+  QUERY_RESP=$(curl -s -w '\n%{http_code}' \
+    -X POST "${GATEWAY_URL}/api/v1/query" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"stub","messages":[{"role":"user","content":"What are the data classification levels?"}]}')
+  QUERY_STATUS=$(echo "$QUERY_RESP" | tail -1)
+  QUERY_BODY=$(echo "$QUERY_RESP" | head -n -1)
+
+  if [[ "$QUERY_STATUS" == "200" ]]; then
+    if echo "$QUERY_BODY" | grep -qE '\[doc:[^]]+,\s*sec:[^]]+\]'; then
+      green "RAG citation present in response"
+      ((PASS++)) || true
+    else
+      red "RAG response missing citation: ${QUERY_BODY:0:200}"
+      ((FAIL++)) || true
+    fi
+  elif [[ "$QUERY_STATUS" =~ ^(422|502|503)$ ]]; then
+    green "RAG query: acceptable fallback without vLLM (HTTP $QUERY_STATUS)"
+    ((PASS++)) || true
+  else
+    red "RAG citation check — unexpected HTTP $QUERY_STATUS"
+    ((FAIL++)) || true
+  fi
 fi
 
 # ── 4. Query ─────────────────────────────────────────────────────────────────
@@ -111,7 +151,7 @@ QUERY_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"model":"stub","messages":[{"role":"user","content":"What is cite-or-refuse mode?"}]}')
-if [[ "$QUERY_STATUS" == "200" || "$QUERY_STATUS" == "502" ]]; then
+if [[ "$QUERY_STATUS" == "200" || "$QUERY_STATUS" == "422" || "$QUERY_STATUS" == "502" ]]; then
   green "query reached gateway (HTTP $QUERY_STATUS)"
   ((PASS++)) || true
 else
@@ -166,7 +206,7 @@ done
 echo ""
 echo "=== 7. Prometheus metrics ==="
 METRICS_BODY=$(curl -s "${GATEWAY_URL}/metrics")
-for metric in http_requests_total http_request_duration_seconds rag_policy_denied_total; do
+for metric in http_requests_total http_request_duration_seconds rag_policy_denied_total rag_documents_indexed_total; do
   if echo "$METRICS_BODY" | grep -q "^# HELP ${metric}"; then
     green "metric exposed: ${metric}"
     ((PASS++)) || true

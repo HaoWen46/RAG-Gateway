@@ -55,3 +55,12 @@ func (h *Handler) Compile(c *gin.Context) {
 	}
 	h.proxy.Compile(c)
 }
+
+// Ingest indexes a document into the retrieval service.
+func (h *Handler) Ingest(c *gin.Context) {
+	if h.proxy == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "retrieval service unavailable"})
+		return
+	}
+	h.proxy.Ingest(c)
+}

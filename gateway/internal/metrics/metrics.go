@@ -7,6 +7,7 @@
 //   - rag_cite_or_refuse_total              – cite-or-refuse rejections
 //   - adapter_probe_failures_total          – canary probe failures (labelled by probe_name)
 //   - http_requests_total                   – HTTP request counters (path, status_class)
+//   - rag_documents_indexed_total           – documents submitted for indexing
 package metrics
 
 import (
@@ -64,4 +65,10 @@ var (
 		Help:    "End-to-end HTTP request latency in seconds.",
 		Buckets: []float64{.05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60},
 	}, []string{"path", "status_class"})
+
+	// DocumentsIndexed counts documents submitted to the indexer via the ingest endpoint.
+	DocumentsIndexed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rag_documents_indexed_total",
+		Help: "Total documents submitted for indexing via the ingest endpoint.",
+	})
 )

@@ -115,6 +115,10 @@ func main() {
 	if retriever != nil {
 		vllmProxy.WithRetrieval(retriever)
 	}
+	// Wire the retrieval client as the indexer for the ingest endpoint.
+	if rc != nil {
+		vllmProxy.WithIndexer(rc)
+	}
 	if ac != nil {
 		vllmProxy.WithAdapter(ac, cfg.AdapterStorePath)
 		vllmProxy.WithLoraManager(loraMgr)
@@ -146,6 +150,7 @@ func main() {
 	{
 		api.POST("/query", h.Query)
 		api.POST("/compile", h.Compile)
+		api.POST("/ingest", h.Ingest)
 	}
 
 	logger.Info("starting gateway", zap.String("port", cfg.Port))

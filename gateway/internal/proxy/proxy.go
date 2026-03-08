@@ -41,6 +41,12 @@ type Retriever interface {
 	Retrieve(ctx context.Context, query, traceID string, topK int32) ([]retrieval.Section, error)
 }
 
+// Indexer is the interface the proxy uses to index new documents.
+// retrieval.Client satisfies this interface.
+type Indexer interface {
+	Index(ctx context.Context, documentID, content string, metadata map[string]string) error
+}
+
 // Proxy forwards requests to vLLM and handles both buffered and SSE responses.
 type Proxy struct {
 	endpoint  string // e.g. "http://localhost:8000"
@@ -50,6 +56,8 @@ type Proxy struct {
 	retrieval Retriever // optional; nil means direct proxy (no RAG)
 	fw        *firewall.ContextFirewall
 	policy    *policy.Client
+
+	indexer Indexer // optional; nil means ingest endpoint returns 503
 
 	// Compile-mode fields (optional; nil disables compile mode).
 	adapterClient    *adapter.Client
@@ -82,6 +90,12 @@ func (p *Proxy) WithPolicy(pc *policy.Client) *Proxy {
 // Calling this enables cite-or-refuse: queries with no retrieved sections are rejected.
 func (p *Proxy) WithRetrieval(r Retriever) *Proxy {
 	p.retrieval = r
+	return p
+}
+
+// WithIndexer attaches an indexer so the ingest endpoint can store documents.
+func (p *Proxy) WithIndexer(i Indexer) *Proxy {
+	p.indexer = i
 	return p
 }
 
@@ -195,6 +209,73 @@ func (p *Proxy) Query(c *gin.Context) {
 	} else {
 		p.bufferedResponse(c, resp, start, traceID, ragActive)
 	}
+}
+
+// ingestRequest is the parsed body for POST /api/v1/ingest.
+type ingestRequest struct {
+	DocumentID string            `json:"document_id"`
+	Content    string            `json:"content"`
+	TrustTier  string            `json:"trust_tier"`
+	Metadata   map[string]string `json:"metadata"`
+}
+
+// Ingest is the handler for POST /api/v1/ingest.
+// It indexes a document into the retrieval service so it is searchable by RAG queries.
+// Requires admin or analyst role.
+func (p *Proxy) Ingest(c *gin.Context) {
+	setSecurityHeaders(c)
+
+	role := c.GetString("role")
+	if role != "admin" && role != "analyst" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "ingest requires admin or analyst role"})
+		return
+	}
+
+	if p.indexer == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "retrieval service unavailable"})
+		return
+	}
+
+	var req ingestRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if req.DocumentID == "" || req.Content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "document_id and content are required"})
+		return
+	}
+
+	// Pass trust_tier as a metadata field so the retrieval service can surface it.
+	meta := make(map[string]string, len(req.Metadata)+1)
+	for k, v := range req.Metadata {
+		meta[k] = v
+	}
+	if req.TrustTier != "" {
+		meta["trust_tier"] = req.TrustTier
+	}
+
+	traceID := c.GetString("trace_id")
+	if err := p.indexer.Index(c.Request.Context(), req.DocumentID, req.Content, meta); err != nil {
+		p.logger.Warn("proxy: ingest failed",
+			zap.String("trace_id", traceID),
+			zap.String("document_id", req.DocumentID),
+			zap.Error(err),
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "indexing failed"})
+		return
+	}
+
+	metrics.DocumentsIndexed.Inc()
+	p.logger.Info("proxy: document indexed",
+		zap.String("trace_id", traceID),
+		zap.String("document_id", req.DocumentID),
+		zap.String("trust_tier", req.TrustTier),
+	)
+	c.JSON(http.StatusOK, gin.H{
+		"document_id": req.DocumentID,
+		"trust_tier":  req.TrustTier,
+	})
 }
 
 // ragAugment retrieves relevant sections and injects them as a system message.
