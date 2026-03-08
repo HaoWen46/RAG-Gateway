@@ -49,12 +49,47 @@ _configure_logging()
 logger = logging.getLogger(__name__)
 
 
+def _load_embedding_model():
+    """Load a SentenceTransformer model if EMBEDDING_MODEL is set.
+
+    Sets HF_HOME to /tmp2/<user>/hf_cache when not already configured so
+    model weights are stored outside the home-directory quota.  Returns None
+    (BM25-only mode) when the env var is unset or the package is missing.
+    """
+    model_name = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    if not model_name:
+        return None
+
+    # Keep model weights off the home-directory quota.
+    if not os.environ.get("HF_HOME"):
+        os.environ["HF_HOME"] = "/tmp2/b11902156/hf_cache"
+
+    try:
+        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+
+        model = SentenceTransformer(model_name)
+        logger.info("loaded embedding model %s (hybrid retrieval enabled)", model_name)
+        return model
+    except ImportError:
+        logger.warning(
+            "sentence-transformers not installed; falling back to BM25-only retrieval"
+        )
+        return None
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            "failed to load embedding model %s (%s); falling back to BM25-only",
+            model_name,
+            exc,
+        )
+        return None
+
+
 class RetrievalServicer(retrieval_pb2_grpc.RetrievalServiceServicer):
     """Implements the RetrievalService gRPC interface."""
 
     def __init__(self) -> None:
         self._doc_index = DocumentIndex()
-        self._retriever = Retriever(self._doc_index)
+        self._retriever = Retriever(self._doc_index, model=_load_embedding_model())
 
     # ------------------------------------------------------------------
     # Index RPC

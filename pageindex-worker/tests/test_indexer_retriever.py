@@ -1,9 +1,36 @@
 """Unit tests for indexer and retriever."""
 
+import numpy as np
 import pytest
 
 from pageindex_worker.indexer import DocumentIndex
-from pageindex_worker.retriever import Retriever
+from pageindex_worker.retriever import Retriever, _rrf_combine
+
+
+class _MockEmbeddingModel:
+    """Deterministic embedding model for tests — no network or GPU required.
+
+    Each text is hashed to a 4-D unit vector so cosine similarity is
+    meaningful (identical texts → cosine 1.0) without downloading weights.
+    """
+
+    def encode(self, texts, show_progress_bar=False, **kwargs):
+        result = []
+        for text in texts:
+            # Stable hash → two floats → 4-D unit vector.
+            h = hash(text) & 0xFFFFFFFF
+            v = np.array(
+                [
+                    float((h >> 24) & 0xFF),
+                    float((h >> 16) & 0xFF),
+                    float((h >> 8) & 0xFF),
+                    float(h & 0xFF),
+                ],
+                dtype=np.float32,
+            )
+            norm = np.linalg.norm(v) or 1.0
+            result.append(v / norm)
+        return np.array(result, dtype=np.float32)
 
 
 SAMPLE_DOC = """
@@ -83,3 +110,74 @@ def test_retrieve_no_zero_score():
     results = r.retrieve("xyzzy_nonexistent_term_12345", top_k=5)
     # All returned sections should have score > 0 (zero-score sections are dropped).
     assert all(res.score > 0 for res in results)
+
+
+# ---------------------------------------------------------------------------
+# Hybrid retrieval tests (using _MockEmbeddingModel — no network required)
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_retrieve_returns_results():
+    """Hybrid mode returns sections (embedding model is present)."""
+    idx = make_index()
+    r = Retriever(idx, model=_MockEmbeddingModel())
+    results = r.retrieve("JWT authentication tokens", top_k=3)
+    assert len(results) > 0
+
+
+def test_hybrid_retrieve_score_normalised():
+    """Hybrid mode normalises scores to [0, 1]."""
+    idx = make_index()
+    r = Retriever(idx, model=_MockEmbeddingModel())
+    results = r.retrieve("rate limiting requests", top_k=5)
+    assert all(0.0 <= res.score <= 1.0 for res in results)
+
+
+def test_hybrid_retrieve_top_score_is_one():
+    """The highest-scoring section receives score == 1.0."""
+    idx = make_index()
+    r = Retriever(idx, model=_MockEmbeddingModel())
+    results = r.retrieve("audit logging trace id", top_k=5)
+    assert len(results) > 0
+    assert results[0].score == pytest.approx(1.0)
+
+
+def test_hybrid_retrieve_embedding_cache():
+    """Embeddings are cached: re-encoding the same sections yields the same results."""
+    idx = make_index()
+    model = _MockEmbeddingModel()
+    r = Retriever(idx, model=model)
+    results_first = r.retrieve("authentication", top_k=3)
+    results_second = r.retrieve("authentication", top_k=3)
+    assert [res.section_id for res in results_first] == [
+        res.section_id for res in results_second
+    ]
+
+
+def test_hybrid_retrieve_metadata_filter():
+    """Metadata filters work in hybrid mode."""
+    idx = DocumentIndex()
+    idx.index("public_doc", SAMPLE_DOC, metadata={"trust_tier": "public"})
+    idx.index("internal_doc", SAMPLE_DOC, metadata={"trust_tier": "internal"})
+    r = Retriever(idx, model=_MockEmbeddingModel())
+    results = r.retrieve(
+        "authentication", top_k=10, metadata_filters={"trust_tier": "public"}
+    )
+    assert all(res.trust_tier == "public" for res in results)
+
+
+def test_hybrid_retrieve_empty_index():
+    """Hybrid mode on an empty index returns []."""
+    idx = DocumentIndex()
+    r = Retriever(idx, model=_MockEmbeddingModel())
+    assert r.retrieve("anything", top_k=5) == []
+
+
+def test_rrf_combine_shapes():
+    """_rrf_combine returns the same number of elements as the inputs."""
+    bm25 = np.array([0.5, 1.0, 0.0, 0.3])
+    cosine = np.array([0.8, 0.2, 0.4, 0.9])
+    combined = _rrf_combine(bm25, cosine)
+    assert combined.shape == bm25.shape
+    # Top combined score should be positive.
+    assert combined.max() > 0
