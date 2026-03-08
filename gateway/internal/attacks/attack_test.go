@@ -291,14 +291,15 @@ func TestAttack_LLM06_TrustTierBypass_AnalystAccessingSecret(t *testing.T) {
 // TestAttack_LLM06_TrustTier_AdminGetsAll verifies that the admin role can access
 // all trust tiers, including secret-tier sections.
 func TestAttack_LLM06_TrustTier_AdminGetsAll(t *testing.T) {
-	vllm := fakeVLLM(vllmResponseWithCitation())
+	// vLLM must cite the actually-retrieved section so M16 citation verification passes.
+	vllm := fakeVLLM(`{"choices":[{"message":{"role":"assistant","content":"Authorised personnel only [doc:classified, sec:classified::0]."}}]}`)
 	defer vllm.Close()
 
 	mixed := &stubRetriever{sections: []retrieval.Section{
 		{
 			DocumentID: "classified",
 			SectionID:  "classified::0",
-			Content:    "Authorised personnel only [doc:classified, sec:classified::0].",
+			Content:    "Authorised personnel only.",
 			TrustTier:  "secret",
 			Score:      0.9,
 		},
