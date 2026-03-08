@@ -2,17 +2,21 @@ package raggateway.retrieval
 
 default allow := false
 
-# Allow retrieval if user role has access to the document's trust tier.
+# Allow retrieval if user role has access to ALL document trust tiers in the result set.
 allow if {
     input.user_role == "admin"
 }
 
 allow if {
     input.user_role == "analyst"
-    input.doc_trust_tier in {"public", "internal"}
+    every tier in input.doc_trust_tiers {
+        tier in {"public", "internal"}
+    }
 }
 
 allow if {
     input.user_role == "viewer"
-    input.doc_trust_tier == "public"
+    every tier in input.doc_trust_tiers {
+        tier == "public"
+    }
 }

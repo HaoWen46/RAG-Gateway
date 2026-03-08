@@ -72,14 +72,14 @@ func (c *Client) CheckCompile(ctx context.Context, userRole string, sectionIDs [
 }
 
 // CheckOutput evaluates whether the LLM's response may be forwarded to the caller.
-// Input: user_role and response_has_citation (bool).
+// Input: has_retrieval_context and response_has_citation.
 // Returns allow=true on OPA errors (graceful degrade).
-func (c *Client) CheckOutput(ctx context.Context, userRole string, responseHasCitation bool) (bool, error) {
+func (c *Client) CheckOutput(ctx context.Context, hasRetrievalContext, responseHasCitation bool) (bool, error) {
 	if c.endpoint == "" {
 		return true, nil
 	}
 	return c.query(ctx, pathOutput, map[string]any{
-		"user_role":             userRole,
+		"has_retrieval_context": hasRetrievalContext,
 		"response_has_citation": responseHasCitation,
 	})
 }

@@ -146,6 +146,11 @@ func (p *Proxy) Query(c *gin.Context) {
 	}
 
 	streaming, _ := payload["stream"].(bool)
+	// Streaming bypasses the cite-or-refuse output filter — block it in RAG mode.
+	if ragActive && streaming {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "streaming is not supported in RAG mode"})
+		return
+	}
 	if streaming {
 		payload["stream_options"] = map[string]any{"include_usage": true}
 	}
@@ -425,15 +430,28 @@ func (p *Proxy) bufferedResponse(c *gin.Context, resp *http.Response, start time
 		return
 	}
 
-	// Output filter: in RAG mode, the response MUST contain at least one citation.
-	if ragActive && !responseHasCitation(data) {
+	hasCitation := responseHasCitation(data)
+
+	// Hardcoded output filter: in RAG mode, the response MUST contain at least one citation.
+	if ragActive && !hasCitation {
 		p.logger.Warn("proxy: output filter rejected response (missing citation)",
 			zap.String("trace_id", traceID))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error":                    "response does not contain required citations",
+			"error":                     "response does not contain required citations",
 			"response_missing_citation": true,
 		})
 		return
+	}
+
+	// OPA output policy check (defense in depth; fail-open when OPA is unavailable).
+	if ragActive {
+		if allowed, _ := p.policy.CheckOutput(c.Request.Context(), ragActive, hasCitation); !allowed {
+			p.logger.Warn("proxy: OPA output policy denied response",
+				zap.String("trace_id", traceID))
+			metrics.PolicyDenied.WithLabelValues("output").Inc()
+			c.JSON(http.StatusForbidden, gin.H{"error": "response blocked by output policy"})
+			return
+		}
 	}
 
 	p.logger.Info("proxy: buffered complete",
