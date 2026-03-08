@@ -10,6 +10,7 @@ vendor/
 bin/
 
 # Python
+**/__pycache__/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,11 +20,6 @@ build/
 .venv/
 venv/
 
-# Generated protobuf
-gateway/internal/pb/
-retrieval/internal/pb/
-pageindex-worker/src/pageindex_worker/pb/
-adapter-service/src/adapter_service/pb/
 
 # Environment
 .env
