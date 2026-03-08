@@ -8,6 +8,7 @@
 //   - adapter_probe_failures_total          – canary probe failures (labelled by probe_name)
 //   - http_requests_total                   – HTTP request counters (path, status_class)
 //   - rag_documents_indexed_total           – documents submitted for indexing
+//   - rag_hallucinated_citations_total      – responses citing sections not in retrieved context
 package metrics
 
 import (
@@ -70,5 +71,12 @@ var (
 	DocumentsIndexed = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "rag_documents_indexed_total",
 		Help: "Total documents submitted for indexing via the ingest endpoint.",
+	})
+
+	// HallucinatedCitations counts responses where the LLM cited a (doc, sec) pair
+	// that was not part of the retrieved context — i.e. a hallucinated citation.
+	HallucinatedCitations = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rag_hallucinated_citations_total",
+		Help: "Total responses rejected because they cited sections not in the retrieved context.",
 	})
 )

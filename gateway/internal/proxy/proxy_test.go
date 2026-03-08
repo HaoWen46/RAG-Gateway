@@ -352,3 +352,31 @@ func TestOutputFilter_CitationPresent_RAGMode(t *testing.T) {
 		t.Fatalf("expected 200 (citation present), got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestOutputFilter_HallucinatedCitation_RAGMode(t *testing.T) {
+	// RAG mode where the LLM cites a (doc, sec) pair that was NOT retrieved → 422.
+	srv := fakevLLM(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// LLM cites doc:ghost, sec:ghost::0 — neither was in the retrieved set.
+		w.Write([]byte(`{"choices":[{"message":{"content":"See [doc:ghost, sec:ghost::0] for details."}}]}`))
+	})
+	defer srv.Close()
+
+	stub := &stubRetriever{sections: []retrieval.Section{
+		{DocumentID: "d1", SectionID: "d1::0", Content: "Policy.", Score: 1.0, TrustTier: "public"},
+	}}
+	r := setupRouterWithRetriever(srv.URL, stub)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query",
+		strings.NewReader(`{"model":"qwen","messages":[{"role":"user","content":"what is the policy?"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 (hallucinated citation), got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "hallucinated_citation") {
+		t.Fatalf("expected hallucinated_citation in body: %s", w.Body.String())
+	}
+}

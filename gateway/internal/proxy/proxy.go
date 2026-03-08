@@ -125,10 +125,10 @@ func (p *Proxy) Query(c *gin.Context) {
 	}
 
 	// RAG mode: retrieve context and inject into messages before forwarding.
-	ragActive := false
+	var injectedSections []retrieval.Section
 	if p.retrieval != nil {
 		userRole := c.GetString("role") // set by JWT auth middleware
-		augmented, injected, ragErr := p.ragAugment(c.Request.Context(), payload, traceID, userRole)
+		augmented, secs, ragErr := p.ragAugment(c.Request.Context(), payload, traceID, userRole)
 		if ragErr != nil {
 			if strings.HasPrefix(ragErr.Error(), "policy:") {
 				c.JSON(http.StatusForbidden, gin.H{"error": "access denied by policy"})
@@ -141,9 +141,10 @@ func (p *Proxy) Query(c *gin.Context) {
 			}
 			return
 		}
-		ragActive = injected
+		injectedSections = secs
 		payload = augmented
 	}
+	ragActive := len(injectedSections) > 0
 
 	streaming, _ := payload["stream"].(bool)
 	// Streaming bypasses the cite-or-refuse output filter — block it in RAG mode.
@@ -212,7 +213,7 @@ func (p *Proxy) Query(c *gin.Context) {
 	if streaming {
 		p.streamResponse(c, resp, start, traceID)
 	} else {
-		p.bufferedResponse(c, resp, start, traceID, ragActive)
+		p.bufferedResponse(c, resp, start, traceID, injectedSections)
 	}
 }
 
@@ -284,16 +285,16 @@ func (p *Proxy) Ingest(c *gin.Context) {
 }
 
 // ragAugment retrieves relevant sections and injects them as a system message.
-// Returns the (possibly augmented) payload, a boolean indicating whether RAG context
-// was injected, and an error if the request must be rejected (cite-or-refuse / policy).
+// Returns the augmented payload, the set of injected sections (nil = no RAG context),
+// and an error if the request must be rejected (cite-or-refuse / policy).
 // userRole is the JWT role claim used by the context firewall for trust-tier filtering.
-func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID, userRole string) (map[string]any, bool, error) {
+func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID, userRole string) (map[string]any, []retrieval.Section, error) {
 	tracer := telemetry.Tracer()
 
 	query := extractLastUserQuery(payload)
 	if query == "" {
 		// No user message — skip retrieval (let vLLM handle as-is).
-		return payload, false, nil
+		return payload, nil, nil
 	}
 
 	// Span: rag.retrieve
@@ -306,7 +307,7 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 		p.logger.Warn("proxy: retrieval failed, continuing without RAG",
 			zap.String("trace_id", traceID), zap.Error(err))
 		// Degrade gracefully: if retrieval service is down, skip cite-or-refuse.
-		return payload, false, nil
+		return payload, nil, nil
 	}
 	retrieveSpan.SetAttributes(attribute.Int("sections.count", len(sections)))
 	retrieveSpan.End()
@@ -320,7 +321,7 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 		p.logger.Warn("proxy: policy denied retrieval",
 			zap.String("trace_id", traceID), zap.String("role", userRole))
 		metrics.PolicyDenied.WithLabelValues("retrieval").Inc()
-		return nil, false, fmt.Errorf("policy: retrieval denied")
+		return nil, nil, fmt.Errorf("policy: retrieval denied")
 	}
 	policySpan.End()
 
@@ -344,7 +345,7 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 		p.logger.Info("proxy: no sections after firewall, refusing",
 			zap.String("trace_id", traceID), zap.String("query", query))
 		metrics.CiteOrRefuse.Inc()
-		return nil, false, fmt.Errorf("cite-or-refuse: no sections")
+		return nil, nil, fmt.Errorf("cite-or-refuse: no sections")
 	}
 
 	systemMsg := buildRAGSystemMessage(sections)
@@ -357,7 +358,7 @@ func (p *Proxy) ragAugment(ctx context.Context, payload map[string]any, traceID,
 	augmented := shallowCopyMap(payload)
 	messages := prependSystemMessage(augmented["messages"], systemMsg)
 	augmented["messages"] = messages
-	return augmented, true, nil
+	return augmented, sections, nil
 }
 
 // extractLastUserQuery returns the content of the last user message in messages.
@@ -422,7 +423,13 @@ func collectTrustTiers(sections []retrieval.Section) []string {
 	return out
 }
 
-func (p *Proxy) bufferedResponse(c *gin.Context, resp *http.Response, start time.Time, traceID string, ragActive bool) {
+// bufferedResponse reads the full upstream body, applies output filters (citation
+// presence + hallucination check + OPA policy), and writes the response to the client.
+// retrievedSections is the set of sections injected into the RAG prompt; nil means
+// no RAG context was active (non-RAG mode, output filters skipped).
+func (p *Proxy) bufferedResponse(c *gin.Context, resp *http.Response, start time.Time, traceID string, retrievedSections []retrieval.Section) {
+	ragActive := len(retrievedSections) > 0
+
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		p.logger.Warn("proxy: read upstream body failed", zap.String("trace_id", traceID), zap.Error(err))
@@ -430,7 +437,7 @@ func (p *Proxy) bufferedResponse(c *gin.Context, resp *http.Response, start time
 		return
 	}
 
-	hasCitation := responseHasCitation(data)
+	hasCitation, hallucinated := verifyCitations(data, retrievedSections)
 
 	// Hardcoded output filter: in RAG mode, the response MUST contain at least one citation.
 	if ragActive && !hasCitation {
@@ -439,6 +446,18 @@ func (p *Proxy) bufferedResponse(c *gin.Context, resp *http.Response, start time
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"error":                     "response does not contain required citations",
 			"response_missing_citation": true,
+		})
+		return
+	}
+
+	// Citation verification: reject any citation to a section not in the retrieved set.
+	if ragActive && hallucinated {
+		p.logger.Warn("proxy: output filter rejected response (hallucinated citation)",
+			zap.String("trace_id", traceID))
+		metrics.HallucinatedCitations.Inc()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":                 "response contains citations to content that was not retrieved",
+			"hallucinated_citation": true,
 		})
 		return
 	}
@@ -506,19 +525,40 @@ func isSSEDataLine(line string) bool {
 	return len(line) >= 6 && line[:6] == "data: "
 }
 
-// citationRE matches the citation format [doc:<id>, sec:<id>] in LLM responses.
-var citationRE = regexp.MustCompile(`\[doc:[^\]]+,\s*sec:[^\]]+\]`)
+// citationParseRE captures (document_id, section_id) from [doc:<id>, sec:<id>] citations.
+var citationParseRE = regexp.MustCompile(`\[doc:([^,\]]+),\s*sec:([^\]]+)\]`)
 
-// responseHasCitation checks whether a buffered vLLM JSON response contains
-// at least one citation in the format [doc:<id>, sec:<id>].
-// It extracts the content field from the first choice's message.
-func responseHasCitation(data []byte) bool {
-	// Quick check before JSON parsing — avoids unmarshalling large payloads
-	// if the pattern is clearly absent.
-	if citationRE.Match(data) {
-		return true
+// sectionKey identifies a retrieved (document_id, section_id) pair.
+type sectionKey struct{ docID, secID string }
+
+// verifyCitations parses all [doc:<id>, sec:<id>] citations from the buffered
+// LLM response and validates them against the set of actually-retrieved sections.
+// Returns (hasCitations, hasHallucination):
+//   - hasCitations: true if at least one citation was found
+//   - hasHallucination: true if at least one citation refers to a section that
+//     was NOT in the retrieved context (hallucinated citation)
+func verifyCitations(data []byte, sections []retrieval.Section) (bool, bool) {
+	matches := citationParseRE.FindAllSubmatch(data, -1)
+	if len(matches) == 0 {
+		return false, false
 	}
-	return false
+
+	// Build a set of valid (docID, secID) pairs from what was actually retrieved.
+	valid := make(map[sectionKey]struct{}, len(sections))
+	for _, s := range sections {
+		valid[sectionKey{strings.TrimSpace(s.DocumentID), strings.TrimSpace(s.SectionID)}] = struct{}{}
+	}
+
+	for _, m := range matches {
+		key := sectionKey{
+			docID: strings.TrimSpace(string(m[1])),
+			secID: strings.TrimSpace(string(m[2])),
+		}
+		if _, ok := valid[key]; !ok {
+			return true, true // at least one hallucinated citation
+		}
+	}
+	return true, false
 }
 
 func setSecurityHeaders(c *gin.Context) {
