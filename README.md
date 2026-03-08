@@ -1,6 +1,6 @@
 # Zero-Trust RAG Gateway
 
-[![CI](https://github.com/b11902156/RAG-Gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/b11902156/RAG-Gateway/actions/workflows/ci.yml)
+[![CI](https://github.com/HaoWen46/RAG-Gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/HaoWen46/RAG-Gateway/actions/workflows/ci.yml)
 
 A security-grade gateway that sits in front of an LLM stack, enforcing retrieval safety, policy, provenance, and adapter safety. Built as a research/educational project implementing the OWASP LLM Top 10 threat model.
 
@@ -14,7 +14,7 @@ Client → Gateway (Go/Gin) → OPA Policy Engine
                           → vLLM (Qwen3.5)
 ```
 
-**Infrastructure:** PostgreSQL · Redis · Jaeger (OTel) · Prometheus
+**Infrastructure:** PostgreSQL · Redis · OPA · Jaeger (OTel) · Prometheus · Grafana
 
 ### Services
 
@@ -53,24 +53,20 @@ Query → Auth → Policy → Retrieval → Adapter Service (compile + sign)
 
 ## Observability
 
-- **Prometheus metrics** — `GET /metrics`; blocked injections, contaminated retrieval rate, adapter probe failures
+- **Prometheus metrics** — `GET /metrics`; request rate, latency (p50/p95/p99), blocked injections, policy denials, adapter probe failures
+- **Grafana dashboard** — auto-provisioned at `http://localhost:3000`; 9 security-focused panels
 - **OTel distributed tracing** — OTLP gRPC export; Jaeger UI at `http://localhost:16686`
+- **Structured JSON logs** — all services emit JSON log lines with `ts`, `level`, `component`, `msg` fields
 - **Structured audit logs** — every request logged to Postgres with trace ID
 
 ## Quick Start
 
 ```bash
-# Start infrastructure
-docker compose up -d postgres redis jaeger
+# Start full stack
+docker compose up -d
 
-# Run gateway (requires VLLM_ENDPOINT, JWT_SECRET, etc.)
-cd gateway && go run ./cmd/server
-
-# Run retrieval + pageindex
-docker compose up retrieval pageindex-worker
-
-# Run adapter service
-cd adapter-service && uv run python -m adapter_service.server
+# Run E2E test (requires gateway to be up)
+GATEWAY_URL=http://localhost:8080 JWT_SECRET=changeme ./scripts/e2e-test.sh
 ```
 
 ### Key Environment Variables
@@ -82,7 +78,7 @@ cd adapter-service && uv run python -m adapter_service.server
 | `VLLM_PROBE_ENDPOINT` | — | vLLM URL for canary probes (unset = disabled) |
 | `VLLM_MODEL` | — | Model ID for canary probe requests |
 | `JWT_SECRET` | `changeme` | HS256 signing secret |
-| `OPA_ENDPOINT` | `http://localhost:8181` | OPA policy server |
+| `OPA_ENDPOINT` | `http://opa:8181` | OPA policy server |
 | `REDIS_ADDR` | `localhost:6379` | Redis for retrieval cache + rate limits |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC endpoint (e.g. `localhost:4317`) |
 | `RATE_LIMIT_RPM` | `60` | Per-IP requests per minute |
@@ -91,7 +87,7 @@ cd adapter-service && uv run python -m adapter_service.server
 ## Testing
 
 ```bash
-# Gateway (Go)
+# Gateway unit tests (Go)
 cd gateway && go test ./...
 
 # Adapter service (Python)
@@ -99,6 +95,9 @@ cd adapter-service && uv run pytest tests/ -v
 
 # Pageindex worker (Python)
 cd pageindex-worker && uv run pytest tests/ -v
+
+# E2E integration test (requires running stack)
+GATEWAY_URL=http://localhost:8080 JWT_SECRET=changeme ./scripts/e2e-test.sh
 ```
 
 ## Milestones
@@ -114,6 +113,10 @@ cd pageindex-worker && uv run pytest tests/ -v
 | 7 | Redis retrieval cache (SHA256-keyed, fail-open) |
 | 8 | Adapter lineage in Postgres (compile/probe/revoke audit trail) |
 | 9 | Real canary probes against live vLLM inference |
+| 10 | GitHub Actions CI (Go test/vet, Python test, Docker build matrix) |
+| 11 | OPA service in docker-compose + structured JSON logging (all services) |
+| 12 | Grafana dashboard (9 panels: latency histogram, security counters) |
+| 13 | E2E integration test script (health, auth, ingest, query, compile, attacks, metrics) |
 
 ## References
 
