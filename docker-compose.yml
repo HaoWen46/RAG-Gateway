@@ -16,6 +16,14 @@ services:
     ports:
       - "6379:6379"
 
+  opa:
+    image: openpolicyagent/opa:latest
+    command: ["run", "--server", "--addr", "0.0.0.0:8181", "--bundle", "/policies"]
+    volumes:
+      - ./policy/rego:/policies
+    ports:
+      - "8181:8181"
+
   jaeger:
     image: jaegertracing/all-in-one:1.62
     ports:
@@ -40,6 +48,7 @@ services:
       - postgres
       - redis
       - jaeger
+      - opa
 
   retrieval:
     build: ./retrieval

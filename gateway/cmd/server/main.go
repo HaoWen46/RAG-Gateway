@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,11 +12,11 @@ import (
 	"github.com/b11902156/rag-gateway/gateway/internal/adapter"
 	"github.com/b11902156/rag-gateway/gateway/internal/adapterstore"
 	"github.com/b11902156/rag-gateway/gateway/internal/audit"
-	"github.com/b11902156/rag-gateway/gateway/internal/cache"
-	"github.com/b11902156/rag-gateway/gateway/internal/telemetry"
 	"github.com/b11902156/rag-gateway/gateway/internal/auth"
+	"github.com/b11902156/rag-gateway/gateway/internal/cache"
 	"github.com/b11902156/rag-gateway/gateway/internal/db"
 	"github.com/b11902156/rag-gateway/gateway/internal/handler"
+	"github.com/b11902156/rag-gateway/gateway/internal/logging"
 	"github.com/b11902156/rag-gateway/gateway/internal/loramanager"
 	"github.com/b11902156/rag-gateway/gateway/internal/middleware"
 	"github.com/b11902156/rag-gateway/gateway/internal/policy"
@@ -25,16 +24,14 @@ import (
 	"github.com/b11902156/rag-gateway/gateway/internal/ratelimit"
 	"github.com/b11902156/rag-gateway/gateway/internal/readiness"
 	"github.com/b11902156/rag-gateway/gateway/internal/retrieval"
+	"github.com/b11902156/rag-gateway/gateway/internal/telemetry"
 )
 
 func main() {
 	cfg := config.Load()
 
-	logger, err := zap.NewProduction()
-	if err != nil {
-		log.Fatalf("failed to init logger: %v", err)
-	}
-	defer logger.Sync()
+	logger := logging.New()
+	defer logger.Sync() //nolint:errcheck
 
 	// Postgres (non-fatal: gateway degrades gracefully without DB).
 	ctx := context.Background()
@@ -67,7 +64,7 @@ func main() {
 	// RSA public key for RS256 (optional; HS256 used when absent).
 	rsaKey, err := auth.LoadRSAPublicKey(cfg.JWTPublicKeyPath)
 	if err != nil {
-		log.Fatalf("failed to load JWT public key: %v", err)
+		logger.Fatal("failed to load JWT public key", zap.Error(err))
 	}
 
 	// vLLM readiness probe — warmup goroutine starts immediately.
@@ -153,6 +150,6 @@ func main() {
 
 	logger.Info("starting gateway", zap.String("port", cfg.Port))
 	if err := r.Run(":" + cfg.Port); err != nil {
-		log.Fatalf("server failed: %v", err)
+		logger.Fatal("server failed", zap.Error(err))
 	}
 }

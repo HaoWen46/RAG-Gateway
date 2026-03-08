@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
+import traceback
 from concurrent import futures
 
 import grpc
@@ -19,6 +21,31 @@ from retrieval.v1 import retrieval_pb2, retrieval_pb2_grpc  # noqa: E402
 from pageindex_worker.indexer import DocumentIndex  # noqa: E402
 from pageindex_worker.retriever import Retriever  # noqa: E402
 
+
+class _JsonFormatter(logging.Formatter):
+    """Emit one JSON object per log line with consistent fields."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
+            "level": record.levelname.lower(),
+            "component": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["error"] = traceback.format_exception(*record.exc_info)[-1].strip()
+        return json.dumps(payload)
+
+
+def _configure_logging(level: int = logging.INFO) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(_JsonFormatter())
+    logging.root.handlers = []
+    logging.root.addHandler(handler)
+    logging.root.setLevel(level)
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -89,7 +116,6 @@ class RetrievalServicer(retrieval_pb2_grpc.RetrievalServiceServicer):
 
 
 def serve():
-    logging.basicConfig(level=logging.INFO)
     port = os.environ.get("PAGEINDEX_GRPC_PORT", "50052")
     max_workers = int(os.environ.get("PAGEINDEX_WORKERS", "4"))
 

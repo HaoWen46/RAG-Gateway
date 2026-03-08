@@ -1,8 +1,10 @@
 """gRPC server for the Adapter Service."""
 
+import json
 import logging
 import os
 import sys
+import traceback
 from concurrent import futures
 
 import grpc
@@ -15,7 +17,31 @@ if _pb_dir not in sys.path:
 from adapter_service.pb.adapter.v1 import adapter_pb2_grpc
 from adapter_service.servicer import AdapterServiceServicer
 
-logging.basicConfig(level=logging.INFO)
+
+class _JsonFormatter(logging.Formatter):
+    """Emit one JSON object per log line with consistent fields."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
+            "level": record.levelname.lower(),
+            "component": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["error"] = traceback.format_exception(*record.exc_info)[-1].strip()
+        return json.dumps(payload)
+
+
+def _configure_logging(level: int = logging.INFO) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(_JsonFormatter())
+    logging.root.handlers = []
+    logging.root.addHandler(handler)
+    logging.root.setLevel(level)
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 
