@@ -7,8 +7,8 @@ build:
 test:
 	cd gateway && go test ./...
 	cd retrieval && go test ./...
-	cd pageindex-worker && python -m pytest tests/
-	cd adapter-service && python -m pytest tests/
+	cd pageindex-worker && uv run pytest tests/
+	cd adapter-service && uv run pytest tests/
 
 lint:
 	cd gateway && go vet ./...

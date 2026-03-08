@@ -1,5 +1,7 @@
 # Zero-Trust RAG Gateway
 
+[![CI](https://github.com/b11902156/RAG-Gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/b11902156/RAG-Gateway/actions/workflows/ci.yml)
+
 A security-grade gateway that sits in front of an LLM stack, enforcing retrieval safety, policy, provenance, and adapter safety. Built as a research/educational project implementing the OWASP LLM Top 10 threat model.
 
 ## Architecture
