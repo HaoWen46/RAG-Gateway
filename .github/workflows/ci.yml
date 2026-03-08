@@ -75,7 +75,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: ${{ matrix.service }}
-        run: uv sync --frozen
+        run: uv sync --frozen --extra dev
 
       - name: Run tests
         working-directory: ${{ matrix.service }}
