@@ -21,8 +21,8 @@ Client → Gateway (Go/Gin) → OPA Policy Engine
 | Service | Language | Role |
 |---|---|---|
 | `gateway` | Go | Auth (JWT/RBAC), proxy, firewall, policy, audit |
-| `retrieval` | Go | Doc catalog, metadata filters, ranking |
-| `pageindex-worker` | Python | BM25 tree indexing and retrieval (PageIndex) |
+| `retrieval` | Go | Doc catalog, metadata filters, ranking, Redis cache |
+| `pageindex-worker` | Python | Hybrid BM25 + semantic indexing and retrieval (PageIndex) |
 | `adapter-service` | Python | LoRA compilation, signing, canary probes |
 
 ## Serving Modes
@@ -42,7 +42,9 @@ Query → Auth → Policy → Retrieval → Adapter Service (compile + sign)
 ## Security Features
 
 - **Context firewall** — strips instruction-like text from retrieved docs, blocks override patterns, enforces doc trust tiers
-- **OPA policy engine** — allow/deny retrieval targets, compile decisions, output constraints (redact, cite-required, refuse)
+- **Citation verification** — every `[doc:<id>, sec:<id>]` citation in the LLM response is validated against the actually-retrieved section set; hallucinated citations are rejected (tracked by `rag_hallucinated_citations_total`)
+- **Cite-or-refuse** — RAG-mode responses without any citation are rejected; streaming is blocked in RAG mode to prevent bypass
+- **OPA policy engine** — allow/deny retrieval targets, compile decisions, output constraints; wired at retrieval, compile, and output checkpoints
 - **Post-compile canary probes** — fires adversarial prompts at each loaded adapter: instruction override, canary string leakage, tool-use bait; fail-closed
 - **Adapter isolation** — only the Adapter Service mints signed adapters; only the Gateway can request vLLM to load them; users have no direct access
 - **Session-scoped adapters** — TTL 5–30 min, auto-revoked with lineage persisted to Postgres
@@ -83,6 +85,8 @@ GATEWAY_URL=http://localhost:8080 JWT_SECRET=changeme ./scripts/e2e-test.sh
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC endpoint (e.g. `localhost:4317`) |
 | `RATE_LIMIT_RPM` | `60` | Per-IP requests per minute |
 | `RETRIEVAL_CACHE_TTL_SECONDS` | `300` | Retrieval cache TTL |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model for hybrid retrieval (pageindex-worker); unset for BM25-only |
+| `HF_HOME` | `/tmp2/.../hf_cache` | Model weight cache directory (set to avoid home-dir quota) |
 
 ## Testing
 
@@ -117,6 +121,10 @@ GATEWAY_URL=http://localhost:8080 JWT_SECRET=changeme ./scripts/e2e-test.sh
 | 11 | OPA service in docker-compose + structured JSON logging (all services) |
 | 12 | Grafana dashboard (9 panels: latency histogram, security counters) |
 | 13 | E2E integration test script (health, auth, ingest, query, compile, attacks, metrics) |
+| 14 | HTTP ingest endpoint (`POST /api/v1/ingest`) + `rag_documents_indexed_total` metric |
+| 15 | Security bug fixes: OPA field mismatch, streaming cite-or-refuse bypass, dead `CheckOutput` |
+| 16 | Citation verification — `[doc:id, sec:id]` validated against retrieved set; hallucinated citations rejected |
+| 17 | Hybrid retrieval — BM25 + sentence-transformers cosine similarity combined via Reciprocal Rank Fusion |
 
 ## References
 
