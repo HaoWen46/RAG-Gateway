@@ -1,0 +1,12 @@
+# Local development override.
+# - Adds host.docker.internal so the gateway can reach vLLM on the host.
+# - Injects JWT_SECRET and VLLM_ENDPOINT into the gateway container.
+# - Sets VLLM_API_KEY to empty (local vLLM without auth).
+services:
+  gateway:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-changeme-eval-secret}
+      VLLM_ENDPOINT: ${VLLM_ENDPOINT:-http://host.docker.internal:8080}
+      VLLM_API_KEY: ${VLLM_API_KEY:-}
